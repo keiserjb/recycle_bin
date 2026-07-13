@@ -77,6 +77,6 @@ function hook_recycle_bin_adapter_info() {
  *   Account to check, or the current account.
  *
  * @return bool
- *   FALSE when the entity is trashed and the account lacks the generic view
+ *   FALSE when the entity is soft-deleted and the account lacks the generic view
  *   permission; TRUE otherwise.
  */

@@ -29,7 +29,7 @@ Permanent managed-file protection is also disabled by default. Enable it only
 after reviewing the metadata-only behavior and the direct-URL limitation.
 
 Automatic purge is disabled by default. When enabled, the retention period and
-per-cron limit apply to trashed entities.
+per-cron limit apply to deleted entities.
 
 Configuration history is intentionally separate from Recycle Bin. Install the
 `config_history` module when configuration snapshots and rollback are needed.
@@ -61,8 +61,8 @@ class ExampleRecycleBinEntityController extends ExampleEntityController {
 
 The integrating module owns bundle policy, relationship semantics, access
 checks, cache/query overrides, and special restore or purge rules. Lifecycle
-notifications are available through `hook_entity_trash_delete()`,
-`hook_entity_trash_restore()`, and `hook_entity_trash_purge()`.
+notifications are available through `hook_entity_recycle_bin_delete()`,
+`hook_entity_recycle_bin_restore()`, and `hook_entity_recycle_bin_purge()`.
 
 ## Testing
 

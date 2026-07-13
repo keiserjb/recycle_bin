@@ -5,34 +5,42 @@
  * Soft delete for nodes plus registered Backdrop entity adapters.
  */
 
-require_once dirname(__FILE__) . '/includes/recycle_bin.storage.inc';
-require_once dirname(__FILE__) . '/includes/recycle_bin.node.inc';
-require_once dirname(__FILE__) . '/includes/recycle_bin.file.inc';
+
+/**
+ * Implements hook_autoload_info().
+ */
+function recycle_bin_autoload_info() {
+  return array(
+    'RecycleBinStorageAdapterTrait' => 'includes/recycle_bin.storage.inc',
+    'RecycleBinNodeStorageController' => 'includes/recycle_bin.node.inc',
+    'RecycleBinFileStorageController' => 'includes/recycle_bin.file.inc',
+  );
+}
 
 /**
  * Implements hook_permission().
  */
 function recycle_bin_permission() {
   return array(
-    'administer trash' => array(
+    'administer recycle bin' => array(
       'title' => t('Administer Recycle Bin'),
       'description' => t('Configure which node bundles use soft delete and automatic purge.'),
     ),
-    'access trash' => array(
+    'access recycle bin' => array(
       'title' => t('Access Recycle Bin'),
       'description' => t('View the Recycle Bin listing and deleted nodes.'),
     ),
     'view deleted entities' => array(
       'title' => t('View deleted entities'),
-      'description' => t('Load and inspect entities in trash context.'),
+      'description' => t('Load and inspect entities in the Recycle Bin.'),
     ),
     'restore deleted entities' => array(
       'title' => t('Restore deleted entities'),
-      'description' => t('Restore entities from trash.'),
+      'description' => t('Restore entities from the Recycle Bin.'),
     ),
     'purge deleted entities' => array(
       'title' => t('Purge deleted entities'),
-      'description' => t('Permanently delete entities from trash.'),
+      'description' => t('Permanently delete entities from the Recycle Bin.'),
     ),
   );
 }
@@ -252,7 +260,7 @@ function recycle_bin_adapter_alter_load_query($query, $entity_type) {
     'recycle_bin.entity_type = :recycle_bin_entity_type AND recycle_bin.entity_id = base.' . $adapter['id key'],
     array(':recycle_bin_entity_type' => $entity_type)
   );
-  $operator = $context === 'trash' ? 'IS NOT NULL' : 'IS NULL';
+  $operator = $context === 'recycle_bin' ? 'IS NOT NULL' : 'IS NULL';
   $query->condition($alias . '.entity_id', NULL, $operator);
   return $query;
 }
@@ -354,7 +362,7 @@ function recycle_bin_query_recycle_bin_alter($query) {
     '%alias.entity_type = :recycle_bin_entity_type AND %alias.entity_id = ' . $base_alias . '.' . $adapter['id key'],
     array(':recycle_bin_entity_type' => $entity_type)
   );
-  if ($context === 'trash') {
+  if ($context === 'recycle_bin') {
     $query->condition($alias . '.entity_id', NULL, 'IS NOT NULL');
   }
   else {
@@ -366,7 +374,7 @@ function recycle_bin_query_recycle_bin_alter($query) {
  * Implements hook_node_access().
  */
 function recycle_bin_node_access($op, $node, $account) {
-  if (empty($node->nid) || !recycle_bin_is_trashed('node', $node->nid)) {
+  if (empty($node->nid) || !recycle_bin_is_deleted('node', $node->nid)) {
     return NODE_ACCESS_IGNORE;
   }
   if (!recycle_bin_entity_access('node', $node, $account)) {
@@ -380,13 +388,13 @@ function recycle_bin_node_access($op, $node, $account) {
  *
  * A metadata-only file adapter cannot protect a public URI from someone who
  * already knows it. This hook prevents normal entity access to marked files
- * while retaining permissioned inspection in trash context.
+ * while retaining permissioned inspection in Recycle Bin context.
  */
 function recycle_bin_file_access($op, $file, $account) {
-  if (!$file instanceof File || empty($file->fid) || !recycle_bin_is_trashed('file', $file->fid)) {
+  if (!$file instanceof File || empty($file->fid) || !recycle_bin_is_deleted('file', $file->fid)) {
     return FILE_ACCESS_IGNORE;
   }
-  if (recycle_bin_context() === 'trash' && $op === 'view' && user_access('view deleted entities', $account)) {
+  if (recycle_bin_context() === 'recycle_bin' && $op === 'view' && user_access('view deleted entities', $account)) {
     return FILE_ACCESS_ALLOW;
   }
   return FILE_ACCESS_DENY;
@@ -424,7 +432,8 @@ function recycle_bin_requirements($phase) {
  * Returns the current request context.
  *
  * @param string|null $context
- *   Set the context when supplied. Valid values are active, trash, and ignore.
+ *   Set the context when supplied. Valid values are active, recycle_bin, and
+ *   ignore.
  *
  * @return string
  *   The current context.
@@ -432,7 +441,7 @@ function recycle_bin_requirements($phase) {
 function recycle_bin_context($context = NULL) {
   $current = &backdrop_static(__FUNCTION__, 'active');
   if ($context !== NULL) {
-    if (!in_array($context, array('active', 'trash', 'ignore'), TRUE)) {
+    if (!in_array($context, array('active', 'recycle_bin', 'ignore'), TRUE)) {
       throw new InvalidArgumentException('Invalid Recycle Bin context.');
     }
     $current = $context;
@@ -480,12 +489,12 @@ function recycle_bin_get_marker($entity_type, $entity_id) {
 /**
  * Returns whether an entity has a current marker.
  */
-function recycle_bin_is_trashed($entity_type, $entity_id) {
+function recycle_bin_is_deleted($entity_type, $entity_id) {
   return (bool) recycle_bin_get_marker($entity_type, $entity_id);
 }
 
 /**
- * Checks view access for a loaded entity that may be in trash.
+ * Checks view access for a loaded entity that may be in the Recycle Bin.
  *
  * Entity-specific modules should call this from their normal access hook.
  * Restore and purge routes remain protected by their dedicated permissions.
@@ -499,7 +508,7 @@ function recycle_bin_entity_access($entity_type, $entity, $account = NULL) {
     return TRUE;
   }
   $entity_id = recycle_bin_adapter_entity_id($adapter, $entity);
-  if (!$entity_id || !recycle_bin_is_trashed($entity_type, $entity_id)) {
+  if (!$entity_id || !recycle_bin_is_deleted($entity_type, $entity_id)) {
     return TRUE;
   }
   return user_access('view deleted entities', $account);
@@ -559,20 +568,20 @@ function recycle_bin_soft_delete_entities($entity_type, array $entities, $adapte
   }
 
   foreach ($entities as $entity) {
-    module_invoke_all($entity_type . '_trash_delete', $entity);
-    module_invoke_all('entity_trash_delete', $entity, $entity_type);
+    module_invoke_all($entity_type . '_recycle_bin_delete', $entity);
+    module_invoke_all('entity_recycle_bin_delete', $entity, $entity_type);
   }
 }
 
 /**
- * Restores one node from trash.
+ * Restores one node from the Recycle Bin.
  */
 function recycle_bin_restore_node($nid) {
   return recycle_bin_restore_entity('node', $nid);
 }
 
 /**
- * Restores one registered entity from trash.
+ * Restores one registered entity from the Recycle Bin.
  */
 function recycle_bin_restore_entity($entity_type, $entity_id) {
   $adapter = recycle_bin_get_adapter($entity_type);
@@ -585,7 +594,7 @@ function recycle_bin_restore_entity($entity_type, $entity_id) {
     return FALSE;
   }
   entity_get_controller($entity_type)->resetCache(array($entity_id));
-  $entity = recycle_bin_with_context('trash', 'entity_load', array($entity_type, $entity_id));
+  $entity = recycle_bin_with_context('recycle_bin', 'entity_load', array($entity_type, $entity_id));
   if (!$entity) {
     return FALSE;
   }
@@ -605,8 +614,8 @@ function recycle_bin_restore_entity($entity_type, $entity_id) {
     throw $e;
   }
 
-  module_invoke_all($entity_type . '_trash_restore', $entity);
-  module_invoke_all('entity_trash_restore', $entity, $entity_type);
+  module_invoke_all($entity_type . '_recycle_bin_restore', $entity);
+  module_invoke_all('entity_recycle_bin_restore', $entity, $entity_type);
   return TRUE;
 }
 
@@ -629,20 +638,20 @@ function recycle_bin_purge_entity($entity_type, $entity_id) {
     return FALSE;
   }
   entity_get_controller($entity_type)->resetCache(array($entity_id));
-  $entity = recycle_bin_with_context('trash', 'entity_load', array($entity_type, $entity_id));
+  $entity = recycle_bin_with_context('recycle_bin', 'entity_load', array($entity_type, $entity_id));
   if (!$entity) {
     watchdog('recycle_bin', 'Cannot purge marker for missing @type @id; marker retained.', array('@type' => $entity_type, '@id' => $entity_id), WATCHDOG_WARNING);
     return FALSE;
   }
 
-  recycle_bin_with_context('trash', 'entity_delete_multiple', array($entity_type, array($entity_id)));
+  recycle_bin_with_context('recycle_bin', 'entity_delete_multiple', array($entity_type, array($entity_id)));
   db_delete('recycle_bin_entity')
     ->condition('entity_type', $entity_type)
     ->condition('entity_id', (string) $entity_id)
     ->execute();
   db_ignore_replica();
-  module_invoke_all($entity_type . '_trash_purge', $entity);
-  module_invoke_all('entity_trash_purge', $entity, $entity_type);
+  module_invoke_all($entity_type . '_recycle_bin_purge', $entity);
+  module_invoke_all('entity_recycle_bin_purge', $entity, $entity_type);
   return TRUE;
 }
 
@@ -678,22 +687,22 @@ function recycle_bin_cron() {
  * Settings access callback.
  */
 function recycle_bin_administer_access() {
-  return user_access('administer trash');
+  return user_access('administer recycle bin');
 }
 
 /**
- * Trash listing access callback.
+ * Recycle Bin listing access callback.
  */
 function recycle_bin_access() {
-  return user_access('access trash') || user_access('administer trash');
+  return user_access('access recycle bin') || user_access('administer recycle bin');
 }
 
 function recycle_bin_restore_access() {
-  return user_access('restore deleted entities') || user_access('administer trash');
+  return user_access('restore deleted entities') || user_access('administer recycle bin');
 }
 
 function recycle_bin_purge_access() {
-  return user_access('purge deleted entities') || user_access('administer trash');
+  return user_access('purge deleted entities') || user_access('administer recycle bin');
 }
 
 /**
@@ -773,7 +782,7 @@ function recycle_bin_listing() {
   $query->extend('PagerDefault')->limit(50);
   $rows = array();
   foreach ($query->execute() as $marker) {
-    $node = recycle_bin_with_context('trash', 'node_load', array($marker->entity_id, NULL, TRUE));
+    $node = recycle_bin_with_context('recycle_bin', 'node_load', array($marker->entity_id, NULL, TRUE));
     $title = $node ? $node->title : t('[Missing node @nid]', array('@nid' => $marker->entity_id));
     $operations = array();
     if ($node) {
@@ -833,4 +842,75 @@ function recycle_bin_purge_form_submit($form, &$form_state) {
     backdrop_set_message(t('The node could not be purged.'), 'error');
   }
   $form_state['redirect'] = 'admin/content/recycle-bin';
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter() for node_delete_confirm().
+ *
+ * Core's confirmation warns that deletion cannot be undone. When the node's
+ * bundle is opted into the Recycle Bin, deletion is recoverable, so the
+ * confirmation must say so.
+ */
+function recycle_bin_form_node_delete_confirm_alter(&$form, &$form_state) {
+  if (empty($form['#node']) || !recycle_bin_node_will_soft_delete($form['#node'])) {
+    return;
+  }
+  $form['description']['#markup'] = recycle_bin_delete_confirm_description();
+  $form['actions']['submit']['#value'] = t('Move to Recycle Bin');
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter() for node_multiple_delete_confirm().
+ */
+function recycle_bin_form_node_multiple_delete_confirm_alter(&$form, &$form_state) {
+  if (empty($form['nodes'])) {
+    return;
+  }
+  $recoverable = 0;
+  $permanent = 0;
+  $nids = array_filter(array_map('intval', element_children($form['nodes'])));
+  foreach (node_load_multiple($nids) as $node) {
+    if (recycle_bin_node_will_soft_delete($node)) {
+      $recoverable++;
+    }
+    else {
+      $permanent++;
+    }
+  }
+  if (!$recoverable) {
+    return;
+  }
+  if ($permanent) {
+    $form['description']['#markup'] = format_plural($recoverable,
+      '1 content item will be moved to the Recycle Bin, where it can be restored.',
+      '@count content items will be moved to the Recycle Bin, where they can be restored.')
+      . ' ' . format_plural($permanent,
+      '1 content item is not covered by the Recycle Bin and will be permanently deleted. This cannot be undone.',
+      '@count content items are not covered by the Recycle Bin and will be permanently deleted. This cannot be undone.');
+  }
+  else {
+    $form['description']['#markup'] = recycle_bin_delete_confirm_description();
+    $form['actions']['submit']['#value'] = t('Move to Recycle Bin');
+  }
+}
+
+/**
+ * Returns TRUE when deleting the node now would soft-delete it.
+ */
+function recycle_bin_node_will_soft_delete($node) {
+  if (recycle_bin_context() !== 'active' || !recycle_bin_adapter_controller_is_active('node')) {
+    return FALSE;
+  }
+  $adapter = recycle_bin_get_adapter('node');
+  return $adapter && recycle_bin_adapter_is_enabled($adapter, $node);
+}
+
+/**
+ * Builds the recoverable-delete confirmation text.
+ */
+function recycle_bin_delete_confirm_description() {
+  $bin = recycle_bin_access()
+    ? l(t('Recycle Bin'), 'admin/content/recycle-bin')
+    : t('Recycle Bin');
+  return t('This content will be moved to the !bin. It can be restored from there until it is purged.', array('!bin' => $bin));
 }

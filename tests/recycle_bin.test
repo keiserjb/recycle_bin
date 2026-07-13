@@ -30,11 +30,11 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
 
     node_delete($nid);
     $this->assertTrue((bool) recycle_bin_get_marker('node', $nid), 'Soft delete creates a marker.');
-    $this->assertFalse(node_load($nid, NULL, TRUE), 'Active node loading hides the trashed node.');
+    $this->assertFalse(node_load($nid, NULL, TRUE), 'Active node loading hides the deleted node.');
 
-    $trashed = recycle_bin_with_context('trash', 'node_load', array($nid, NULL, TRUE));
-    $this->assertEqual($trashed->title, 'Recycle Bin fixture', 'Trash context loads the original node.');
-    $this->assertEqual($trashed->body[LANGUAGE_NONE][0]['value'], 'unchanged body', 'Trash context preserves field data.');
+    $trashed = recycle_bin_with_context('recycle_bin', 'node_load', array($nid, NULL, TRUE));
+    $this->assertEqual($trashed->title, 'Recycle Bin fixture', 'Recycle Bin context loads the original node.');
+    $this->assertEqual($trashed->body[LANGUAGE_NONE][0]['value'], 'unchanged body', 'Recycle Bin context preserves field data.');
 
     $this->assertTrue(recycle_bin_restore_node($nid), 'Restore succeeds.');
     $restored = node_load($nid, NULL, TRUE);
@@ -57,7 +57,7 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
     ));
     $nid = $node->nid;
     node_delete($nid);
-    $this->assertFalse(recycle_bin_is_trashed('node', $nid), 'Disabled bundle does not create a marker.');
+    $this->assertFalse(recycle_bin_is_deleted('node', $nid), 'Disabled bundle does not create a marker.');
     $this->assertFalse(node_load($nid, NULL, TRUE), 'Disabled bundle is permanently deleted.');
   }
 
@@ -66,7 +66,7 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
    */
   public function testContextRestoresAfterException() {
     try {
-      recycle_bin_with_context('trash', function() {
+      recycle_bin_with_context('recycle_bin', function() {
         throw new Exception('fixture exception');
       });
     }
@@ -86,11 +86,11 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
     $id = $entity->id;
 
     entity_delete_multiple('entity_test', array($id));
-    $this->assertTrue(recycle_bin_is_trashed('entity_test', $id), 'Custom entity delete creates a marker.');
+    $this->assertTrue(recycle_bin_is_deleted('entity_test', $id), 'Custom entity delete creates a marker.');
     $this->assertFalse(entity_load('entity_test', $id), 'Active custom entity loading hides the marker.');
 
-    $trashed = recycle_bin_with_context('trash', 'entity_load', array('entity_test', $id));
-    $this->assertEqual($trashed->name, 'Trash adapter fixture', 'Trash context loads the custom entity.');
+    $trashed = recycle_bin_with_context('recycle_bin', 'entity_load', array('entity_test', $id));
+    $this->assertEqual($trashed->name, 'Trash adapter fixture', 'Recycle Bin context loads the custom entity.');
     $this->assertTrue(recycle_bin_restore_entity('entity_test', $id), 'Custom entity restore succeeds.');
     $this->assertEqual(entity_load('entity_test', $id)->name, 'Trash adapter fixture', 'Restored custom entity remains unchanged.');
 
@@ -109,9 +109,9 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
     $fid = $file->fid;
 
     file_delete($fid);
-    $this->assertTrue(recycle_bin_is_trashed('file', $fid), 'Direct managed-file deletion creates a marker.');
-    $this->assertFalse(file_load($fid), 'Active file loading hides the trashed file.');
-    $this->assertTrue((bool) recycle_bin_with_context('trash', 'file_load', array($fid)), 'Trash context loads the original file metadata.');
+    $this->assertTrue(recycle_bin_is_deleted('file', $fid), 'Direct managed-file deletion creates a marker.');
+    $this->assertFalse(file_load($fid), 'Active file loading hides the deleted file.');
+    $this->assertTrue((bool) recycle_bin_with_context('recycle_bin', 'file_load', array($fid)), 'Recycle Bin context loads the original file metadata.');
     $this->assertTrue(file_exists($uri), 'Metadata-only deletion preserves the file data.');
 
     $this->assertTrue(recycle_bin_restore_entity('file', $fid), 'Managed file restore succeeds.');
