@@ -814,13 +814,25 @@ function recycle_bin_listing() {
     ->fields('t')
     ->orderBy('deleted', 'DESC');
   $query->extend('PagerDefault')->limit(50);
-  $rows = array();
+
+  $markers = array();
+  $ids_by_type = array();
   foreach ($query->execute() as $marker) {
-    $adapter = recycle_bin_get_adapter($marker->entity_type);
-    if (!$adapter) {
+    if (!recycle_bin_get_adapter($marker->entity_type)) {
       continue;
     }
-    $entity = recycle_bin_with_context('recycle_bin', 'entity_load', array($marker->entity_type, $marker->entity_id));
+    $markers[] = $marker;
+    $ids_by_type[$marker->entity_type][] = $marker->entity_id;
+  }
+
+  $entities_by_type = array();
+  foreach ($ids_by_type as $entity_type => $ids) {
+    $entities_by_type[$entity_type] = recycle_bin_with_context('recycle_bin', 'entity_load_multiple', array($entity_type, $ids));
+  }
+
+  $rows = array();
+  foreach ($markers as $marker) {
+    $entity = isset($entities_by_type[$marker->entity_type][$marker->entity_id]) ? $entities_by_type[$marker->entity_type][$marker->entity_id] : FALSE;
     $title = recycle_bin_entity_label($marker->entity_type, $entity, $marker->entity_id);
     $operations = array();
     if ($entity) {
@@ -842,11 +854,15 @@ function recycle_bin_listing() {
       format_date($marker->deleted),
       implode(' | ', $operations),
     );
-    // The entity was loaded in Recycle Bin context for display. Do not leave
-    // that object in the normal entity cache where an active load in this
-    // request could bypass the marker visibility filter.
-    entity_get_controller($marker->entity_type)->resetCache(array($marker->entity_id));
   }
+
+  // The entities were loaded in Recycle Bin context for display. Do not leave
+  // those objects in the normal entity cache where an active load in this
+  // request could bypass the marker visibility filter.
+  foreach ($ids_by_type as $entity_type => $ids) {
+    entity_get_controller($entity_type)->resetCache($ids);
+  }
+
   $build['table'] = array(
     '#theme' => 'table',
     '#header' => array(t('Item'), t('Type'), t('Bundle'), t('Deleted'), t('Operations')),
