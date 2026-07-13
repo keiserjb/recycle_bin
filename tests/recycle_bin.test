@@ -62,6 +62,48 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
   }
 
   /**
+   * Recoverable single-node deletion uses Recycle Bin confirmation text.
+   */
+  public function testRecoverableDeleteConfirmation() {
+    $node = $this->backdropCreateNode(array(
+      'type' => 'article',
+      'title' => 'Recycle Bin delete confirmation fixture',
+    ));
+    $form_state = array();
+    $form = node_delete_confirm(array(), $form_state, $node);
+    recycle_bin_form_node_delete_confirm_alter($form, $form_state);
+
+    $this->assertEqual($form['description']['#markup'], recycle_bin_delete_confirm_description(), 'Recoverable deletion confirmation explains the Recycle Bin behavior.');
+    $this->assertEqual($form['actions']['submit']['#value'], t('Move to Recycle Bin'), 'Recoverable deletion uses the Recycle Bin button label.');
+  }
+
+  /**
+   * Mixed multiple deletion explains recoverable and permanent outcomes.
+   */
+  public function testMixedMultipleDeleteConfirmation() {
+    $recoverable = $this->backdropCreateNode(array(
+      'type' => 'article',
+      'title' => 'Recycle Bin mixed recoverable fixture',
+    ));
+    $permanent = $this->backdropCreateNode(array(
+      'type' => 'page',
+      'title' => 'Recycle Bin mixed permanent fixture',
+    ));
+    $form_state = array('nids' => array($recoverable->nid, $permanent->nid));
+    $form = node_multiple_delete_confirm(array(), $form_state);
+    recycle_bin_form_node_multiple_delete_confirm_alter($form, $form_state);
+
+    $expected_description = format_plural(1,
+      '1 content item will be moved to the Recycle Bin, where it can be restored.',
+      '@count content items will be moved to the Recycle Bin, where they can be restored.')
+      . ' ' . format_plural(1,
+      '1 content item is not covered by the Recycle Bin and will be permanently deleted. This cannot be undone.',
+      '@count content items are not covered by the Recycle Bin and will be permanently deleted. This cannot be undone.');
+    $this->assertEqual($form['description']['#markup'], $expected_description, 'Mixed deletion confirmation explains recoverable and permanent outcomes.');
+    $this->assertEqual($form['actions']['submit']['#value'], t('Delete'), 'Mixed deletion retains the delete button label.');
+  }
+
+  /**
    * Temporary contexts are restored even when the callback throws.
    */
   public function testContextRestoresAfterException() {
@@ -81,7 +123,7 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
    */
   public function testRegisteredCustomEntityAdapter() {
     $this->assertTrue((bool) recycle_bin_get_adapter('entity_test'), 'The fixture adapter is registered.');
-    $entity = entity_create('entity_test', array('name' => 'Trash adapter fixture'));
+    $entity = entity_create('entity_test', array('name' => 'Recycle Bin adapter fixture'));
     entity_get_controller('entity_test')->save($entity);
     $id = $entity->id;
 
@@ -89,10 +131,10 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
     $this->assertTrue(recycle_bin_is_deleted('entity_test', $id), 'Custom entity delete creates a marker.');
     $this->assertFalse(entity_load('entity_test', $id), 'Active custom entity loading hides the marker.');
 
-    $trashed = recycle_bin_with_context('recycle_bin', 'entity_load', array('entity_test', $id));
-    $this->assertEqual($trashed->name, 'Trash adapter fixture', 'Recycle Bin context loads the custom entity.');
+    $recycle_bin_entity = recycle_bin_with_context('recycle_bin', 'entity_load', array('entity_test', $id));
+    $this->assertEqual($recycle_bin_entity->name, 'Recycle Bin adapter fixture', 'Recycle Bin context loads the custom entity.');
     $this->assertTrue(recycle_bin_restore_entity('entity_test', $id), 'Custom entity restore succeeds.');
-    $this->assertEqual(entity_load('entity_test', $id)->name, 'Trash adapter fixture', 'Restored custom entity remains unchanged.');
+    $this->assertEqual(entity_load('entity_test', $id)->name, 'Recycle Bin adapter fixture', 'Restored custom entity remains unchanged.');
 
     entity_delete_multiple('entity_test', array($id));
     $this->assertTrue(recycle_bin_purge_entity('entity_test', $id), 'Custom entity purge succeeds.');
