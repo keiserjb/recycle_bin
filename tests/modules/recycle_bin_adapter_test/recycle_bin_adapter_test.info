@@ -1,0 +1,8 @@
+name = Recycle Bin adapter fixture
+type = module
+description = Provides a custom entity adapter fixture for Recycle Bin tests.
+backdrop = 1.x
+package = Testing
+hidden = TRUE
+dependencies[] = entity_test
+dependencies[] = recycle_bin

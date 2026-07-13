@@ -1,0 +1,8 @@
+{
+    "_config_name": "recycle_bin.settings",
+    "enabled_bundles": [],
+    "file_adapter_enabled": false,
+    "auto_purge_enabled": false,
+    "retention_days": 30,
+    "purge_limit": 50
+}

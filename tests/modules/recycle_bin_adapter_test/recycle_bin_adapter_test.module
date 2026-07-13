@@ -1,0 +1,36 @@
+<?php
+
+/**
+ * @file
+ * Test-only custom entity adapter for Recycle Bin.
+ */
+
+/**
+ * Implements hook_recycle_bin_adapter_info().
+ */
+function recycle_bin_adapter_test_recycle_bin_adapter_info() {
+  return array(
+    'entity_test' => array(
+      'entity type' => 'entity_test',
+      'controller class' => 'EntityDatabaseStorageController',
+      'replacement class' => 'RecycleBinAdapterTestEntityController',
+      'base table' => 'entity_test',
+      'id key' => 'id',
+      'enabled callback' => 'recycle_bin_adapter_test_enabled',
+    ),
+  );
+}
+
+/**
+ * Test policy: every fixture entity is explicitly opted in.
+ */
+function recycle_bin_adapter_test_enabled($entity, $adapter) {
+  return TRUE;
+}
+
+/**
+ * Replacement controller proving a custom entity can use the shared trait.
+ */
+class RecycleBinAdapterTestEntityController extends EntityDatabaseStorageController {
+  use RecycleBinStorageAdapterTrait;
+}

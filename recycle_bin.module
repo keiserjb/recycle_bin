@@ -1,0 +1,836 @@
+<?php
+
+/**
+ * @file
+ * Soft delete for nodes plus registered Backdrop entity adapters.
+ */
+
+require_once dirname(__FILE__) . '/includes/recycle_bin.storage.inc';
+require_once dirname(__FILE__) . '/includes/recycle_bin.node.inc';
+require_once dirname(__FILE__) . '/includes/recycle_bin.file.inc';
+
+/**
+ * Implements hook_permission().
+ */
+function recycle_bin_permission() {
+  return array(
+    'administer trash' => array(
+      'title' => t('Administer Recycle Bin'),
+      'description' => t('Configure which node bundles use soft delete and automatic purge.'),
+    ),
+    'access trash' => array(
+      'title' => t('Access Recycle Bin'),
+      'description' => t('View the Recycle Bin listing and deleted nodes.'),
+    ),
+    'view deleted entities' => array(
+      'title' => t('View deleted entities'),
+      'description' => t('Load and inspect entities in trash context.'),
+    ),
+    'restore deleted entities' => array(
+      'title' => t('Restore deleted entities'),
+      'description' => t('Restore entities from trash.'),
+    ),
+    'purge deleted entities' => array(
+      'title' => t('Purge deleted entities'),
+      'description' => t('Permanently delete entities from trash.'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_config_info().
+ */
+function recycle_bin_config_info() {
+  return array(
+    'recycle_bin.settings' => array(
+      'label' => t('Recycle Bin settings'),
+      'group' => t('Content'),
+    ),
+  );
+}
+
+/**
+ * Implements hook_entity_info_alter().
+ */
+function recycle_bin_entity_info_alter(&$entity_info) {
+  foreach (recycle_bin_get_adapters() as $entity_type => $adapter) {
+    if (empty($entity_info[$entity_type]['controller class'])) {
+      continue;
+    }
+    $current = $entity_info[$entity_type]['controller class'];
+    if ($current === $adapter['controller class']) {
+      if (class_exists($adapter['replacement class'])) {
+        $entity_info[$entity_type]['controller class'] = $adapter['replacement class'];
+      }
+      else {
+        watchdog('recycle_bin', 'The replacement controller @class for @type is not available; the adapter was skipped.', array('@class' => $adapter['replacement class'], '@type' => $entity_type), WATCHDOG_WARNING);
+      }
+    }
+    elseif ($current !== $adapter['replacement class']) {
+      watchdog('recycle_bin', 'The @type controller @class was not replaced; Recycle Bin will not intercept its deletes.', array('@class' => $current, '@type' => $entity_type), WATCHDOG_WARNING);
+    }
+  }
+}
+
+/**
+ * Implements hook_recycle_bin_adapter_info().
+ *
+ * The node adapter is built in. Contrib adapters are collected separately via
+ * module_invoke_all() so a module such as Paragraphs can register its own
+ * controller subclass and entity-specific policy.
+ */
+function recycle_bin_builtin_adapter_info() {
+  return array(
+    'node' => array(
+      'entity type' => 'node',
+      'controller class' => 'NodeStorageController',
+      'replacement class' => 'RecycleBinNodeStorageController',
+      'base table' => 'node',
+      'id key' => 'nid',
+      'bundle key' => 'type',
+      'revision key' => 'vid',
+      'enabled callback' => 'recycle_bin_node_adapter_enabled',
+    ),
+    'file' => array(
+      'entity type' => 'file',
+      'controller class' => 'FileStorageController',
+      'replacement class' => 'RecycleBinFileStorageController',
+      'base table' => 'file_managed',
+      'id key' => 'fid',
+      'bundle key' => 'type',
+      'revision key' => NULL,
+      'enabled callback' => 'recycle_bin_file_adapter_enabled',
+    ),
+  );
+}
+
+/**
+ * Returns the validated adapter registry.
+ */
+function recycle_bin_get_adapters() {
+  $adapters = &backdrop_static(__FUNCTION__);
+  if (isset($adapters)) {
+    return $adapters;
+  }
+
+  $adapters = recycle_bin_builtin_adapter_info();
+  foreach (module_invoke_all('recycle_bin_adapter_info') as $definitions) {
+    if (!is_array($definitions)) {
+      continue;
+    }
+    foreach ($definitions as $entity_type => $definition) {
+      if (is_array($definition)) {
+        $definition['entity type'] = isset($definition['entity type']) ? $definition['entity type'] : $entity_type;
+        $adapters[$entity_type] = $definition;
+      }
+    }
+  }
+
+  foreach ($adapters as $entity_type => $adapter) {
+    $required = array('entity type', 'controller class', 'replacement class', 'base table', 'id key');
+    foreach ($required as $key) {
+      if (empty($adapter[$key])) {
+        unset($adapters[$entity_type]);
+        watchdog('recycle_bin', 'The adapter for @type is missing required key @key and was ignored.', array('@type' => $entity_type, '@key' => $key), WATCHDOG_WARNING);
+        continue 2;
+      }
+    }
+    if ($adapter['entity type'] !== $entity_type
+      || !preg_match('/^[a-z0-9_]{1,32}$/', $entity_type)
+      || !preg_match('/^[a-z0-9_]+$/', $adapter['base table'])
+      || !preg_match('/^[a-z0-9_]+$/', $adapter['id key'])) {
+      unset($adapters[$entity_type]);
+      watchdog('recycle_bin', 'The adapter for @type contains invalid entity or SQL identifiers and was ignored.', array('@type' => $entity_type), WATCHDOG_WARNING);
+      continue;
+    }
+    foreach (array('enabled callback', 'cache reset callback', 'load query callback', 'entity id callback') as $callback_key) {
+      if (!empty($adapter[$callback_key]) && !function_exists($adapter[$callback_key])) {
+        unset($adapters[$entity_type]);
+        watchdog('recycle_bin', 'The adapter for @type references missing callback @callback and was ignored.', array('@type' => $entity_type, '@callback' => $adapter[$callback_key]), WATCHDOG_WARNING);
+        continue 2;
+      }
+    }
+    if (!isset($adapter['bundle key'])) {
+      $adapters[$entity_type]['bundle key'] = NULL;
+    }
+    if (!isset($adapter['revision key'])) {
+      $adapters[$entity_type]['revision key'] = NULL;
+    }
+    if (!isset($adapter['enabled callback'])) {
+      $adapters[$entity_type]['enabled callback'] = NULL;
+    }
+    if (!isset($adapter['load query callback'])) {
+      $adapters[$entity_type]['load query callback'] = NULL;
+    }
+    $adapters[$entity_type] = $adapter;
+  }
+  return $adapters;
+}
+
+/**
+ * Returns one registered adapter, or FALSE.
+ */
+function recycle_bin_get_adapter($entity_type) {
+  $adapters = recycle_bin_get_adapters();
+  return isset($adapters[$entity_type]) ? $adapters[$entity_type] : FALSE;
+}
+
+/**
+ * Returns TRUE when the adapter's replacement controller is active.
+ *
+ * This is a safety gate for permanent purge. If another module wins the
+ * controller alter race, purge must not silently call an unwrapped delete.
+ */
+function recycle_bin_adapter_controller_is_active($entity_type) {
+  $adapter = recycle_bin_get_adapter($entity_type);
+  if (!$adapter) {
+    return FALSE;
+  }
+  $info = entity_get_info($entity_type);
+  return !empty($info['controller class']) && $info['controller class'] === $adapter['replacement class'];
+}
+
+/**
+ * Built-in node opt-in policy.
+ */
+function recycle_bin_node_adapter_enabled($entity) {
+  return recycle_bin_is_bundle_enabled('node', $entity->type);
+}
+
+/**
+ * Built-in managed-file opt-in policy.
+ *
+ * Temporary files remain under Backdrop's normal cleanup rules. The adapter
+ * only protects permanent managed files and never moves or copies file data.
+ */
+function recycle_bin_file_adapter_enabled($entity) {
+  return (bool) config_get('recycle_bin.settings', 'file_adapter_enabled')
+    && isset($entity->status)
+    && (int) $entity->status === FILE_STATUS_PERMANENT;
+}
+
+/**
+ * Returns an entity ID using adapter metadata or an entity method.
+ */
+function recycle_bin_adapter_entity_id($adapter, $entity) {
+  if (!empty($adapter['entity id callback']) && function_exists($adapter['entity id callback'])) {
+    return call_user_func($adapter['entity id callback'], $entity);
+  }
+  $key = $adapter['id key'];
+  if (isset($entity->{$key})) {
+    return $entity->{$key};
+  }
+  return method_exists($entity, 'id') ? $entity->id() : NULL;
+}
+
+/**
+ * Determines whether a registered entity is opted into soft deletion.
+ */
+function recycle_bin_adapter_is_enabled($adapter, $entity) {
+  if (!empty($adapter['enabled callback']) && function_exists($adapter['enabled callback'])) {
+    return (bool) call_user_func($adapter['enabled callback'], $entity, $adapter);
+  }
+  return FALSE;
+}
+
+/**
+ * Adds marker visibility conditions to an adapter load query.
+ */
+function recycle_bin_adapter_alter_load_query($query, $entity_type) {
+  $context = recycle_bin_context();
+  $adapter = recycle_bin_get_adapter($entity_type);
+  if (!$adapter || $context === 'ignore') {
+    return $query;
+  }
+  if (!empty($adapter['load query callback']) && function_exists($adapter['load query callback'])) {
+    return call_user_func($adapter['load query callback'], $query, $context, $adapter);
+  }
+
+  $alias = $query->leftJoin(
+    'recycle_bin_entity',
+    'recycle_bin',
+    'recycle_bin.entity_type = :recycle_bin_entity_type AND recycle_bin.entity_id = base.' . $adapter['id key'],
+    array(':recycle_bin_entity_type' => $entity_type)
+  );
+  $operator = $context === 'trash' ? 'IS NOT NULL' : 'IS NULL';
+  $query->condition($alias . '.entity_id', NULL, $operator);
+  return $query;
+}
+
+/**
+ * Implements hook_menu().
+ */
+function recycle_bin_menu() {
+  $items['admin/config/content/recycle-bin'] = array(
+    'title' => 'Recycle Bin',
+    'description' => 'Configure soft deletion and automatic purge.',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => array('recycle_bin_settings_form'),
+    'access callback' => 'recycle_bin_administer_access',
+    'type' => MENU_NORMAL_ITEM,
+  );
+  $items['admin/content/recycle-bin'] = array(
+    'title' => 'Recycle Bin',
+    'description' => 'Review, restore, or purge deleted content.',
+    'page callback' => 'recycle_bin_listing',
+    'access callback' => 'recycle_bin_access',
+    'type' => MENU_LOCAL_TASK,
+  );
+  $items['admin/content/recycle-bin/%/restore'] = array(
+    'title' => 'Restore',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => array('recycle_bin_restore_form', 3),
+    'access callback' => 'recycle_bin_restore_access',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/recycle-bin/%/purge'] = array(
+    'title' => 'Purge',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => array('recycle_bin_purge_form', 3),
+    'access callback' => 'recycle_bin_purge_access',
+    'type' => MENU_CALLBACK,
+  );
+  return $items;
+}
+
+/**
+ * Implements hook_views_api().
+ */
+function recycle_bin_views_api() {
+  return array('api' => 3);
+}
+
+/**
+ * Implements hook_entity_query_alter().
+ */
+function recycle_bin_entity_query_alter($query) {
+  if (!empty($query->entityConditions['entity_type']['value']) && recycle_bin_context() !== 'ignore') {
+    $entity_type = $query->entityConditions['entity_type']['value'];
+    $adapter = recycle_bin_get_adapter($entity_type);
+    if (!$adapter) {
+      return;
+    }
+    $query->addTag('recycle_bin');
+    $query->addMetaData('recycle_bin_entity_type', $entity_type);
+    $query->addMetaData('recycle_bin_base_alias', $adapter['base table']);
+  }
+}
+
+/**
+ * Implements hook_query_TAG_alter() for tagged EntityFieldQuery and Views SQL.
+ */
+function recycle_bin_query_recycle_bin_alter($query) {
+  $context = recycle_bin_context();
+  if ($context === 'ignore') {
+    return;
+  }
+
+  $entity_type = $query->getMetaData('recycle_bin_entity_type');
+  $base_alias = $query->getMetaData('recycle_bin_base_alias');
+  if (!$entity_type) {
+    // Views supplies the tag through its query plugin. Find a registered base
+    // table in the final SQL query before adding the marker join.
+    $tables = $query->getTables();
+    foreach ($tables as $alias => $table) {
+      if (!empty($table['table'])) {
+        foreach (recycle_bin_get_adapters() as $candidate_type => $candidate) {
+          if ($table['table'] === $candidate['base table']) {
+            $entity_type = $candidate_type;
+            $base_alias = $alias;
+            break 2;
+          }
+        }
+      }
+    }
+  }
+  $adapter = $entity_type ? recycle_bin_get_adapter($entity_type) : FALSE;
+  if (!$adapter || !$base_alias) {
+    return;
+  }
+
+  $alias = $query->leftJoin(
+    'recycle_bin_entity',
+    'recycle_bin',
+    '%alias.entity_type = :recycle_bin_entity_type AND %alias.entity_id = ' . $base_alias . '.' . $adapter['id key'],
+    array(':recycle_bin_entity_type' => $entity_type)
+  );
+  if ($context === 'trash') {
+    $query->condition($alias . '.entity_id', NULL, 'IS NOT NULL');
+  }
+  else {
+    $query->condition($alias . '.entity_id', NULL, 'IS NULL');
+  }
+}
+
+/**
+ * Implements hook_node_access().
+ */
+function recycle_bin_node_access($op, $node, $account) {
+  if (empty($node->nid) || !recycle_bin_is_trashed('node', $node->nid)) {
+    return NODE_ACCESS_IGNORE;
+  }
+  if (!recycle_bin_entity_access('node', $node, $account)) {
+    return NODE_ACCESS_DENY;
+  }
+  return NODE_ACCESS_IGNORE;
+}
+
+/**
+ * Implements hook_file_access().
+ *
+ * A metadata-only file adapter cannot protect a public URI from someone who
+ * already knows it. This hook prevents normal entity access to marked files
+ * while retaining permissioned inspection in trash context.
+ */
+function recycle_bin_file_access($op, $file, $account) {
+  if (!$file instanceof File || empty($file->fid) || !recycle_bin_is_trashed('file', $file->fid)) {
+    return FILE_ACCESS_IGNORE;
+  }
+  if (recycle_bin_context() === 'trash' && $op === 'view' && user_access('view deleted entities', $account)) {
+    return FILE_ACCESS_ALLOW;
+  }
+  return FILE_ACCESS_DENY;
+}
+
+/**
+ * Implements hook_requirements().
+ */
+function recycle_bin_requirements($phase) {
+  $requirements = array();
+  if ($phase !== 'runtime') {
+    return $requirements;
+  }
+  $requirements['recycle_bin_marker_table'] = array(
+    'title' => t('Recycle Bin marker table'),
+    'value' => db_table_exists('recycle_bin_entity') ? t('Present') : t('Missing'),
+    'severity' => db_table_exists('recycle_bin_entity') ? REQUIREMENT_OK : REQUIREMENT_ERROR,
+  );
+  foreach (recycle_bin_get_adapters() as $entity_type => $adapter) {
+    $info = entity_get_info($entity_type);
+    $active = !empty($info['controller class']) && $info['controller class'] === $adapter['replacement class'];
+    if (!$active) {
+      $requirements['recycle_bin_adapter_' . $entity_type] = array(
+        'title' => t('Recycle Bin @type adapter', array('@type' => $entity_type)),
+        'value' => t('Controller conflict or unavailable replacement'),
+        'severity' => REQUIREMENT_WARNING,
+        'description' => t('The entity remains permanently delete-only until its registered replacement controller is active.'),
+      );
+    }
+  }
+  return $requirements;
+}
+
+/**
+ * Returns the current request context.
+ *
+ * @param string|null $context
+ *   Set the context when supplied. Valid values are active, trash, and ignore.
+ *
+ * @return string
+ *   The current context.
+ */
+function recycle_bin_context($context = NULL) {
+  $current = &backdrop_static(__FUNCTION__, 'active');
+  if ($context !== NULL) {
+    if (!in_array($context, array('active', 'trash', 'ignore'), TRUE)) {
+      throw new InvalidArgumentException('Invalid Recycle Bin context.');
+    }
+    $current = $context;
+  }
+  return $current;
+}
+
+/**
+ * Runs a callback in a temporary context and always restores the old context.
+ */
+function recycle_bin_with_context($context, $callback, array $args = array()) {
+  $previous = recycle_bin_context();
+  recycle_bin_context($context);
+  try {
+    return call_user_func_array($callback, $args);
+  }
+  finally {
+    recycle_bin_context($previous);
+  }
+}
+
+/**
+ * Returns whether a bundle is enabled for soft deletion.
+ */
+function recycle_bin_is_bundle_enabled($entity_type, $bundle) {
+  if ($entity_type !== 'node') {
+    return FALSE;
+  }
+  $enabled = config_get('recycle_bin.settings', 'enabled_bundles');
+  return in_array($bundle, is_array($enabled) ? $enabled : array(), TRUE);
+}
+
+/**
+ * Returns a current marker row, or FALSE.
+ */
+function recycle_bin_get_marker($entity_type, $entity_id) {
+  return db_select('recycle_bin_entity', 't')
+    ->fields('t')
+    ->condition('entity_type', $entity_type)
+    ->condition('entity_id', (string) $entity_id)
+    ->execute()
+    ->fetchObject();
+}
+
+/**
+ * Returns whether an entity has a current marker.
+ */
+function recycle_bin_is_trashed($entity_type, $entity_id) {
+  return (bool) recycle_bin_get_marker($entity_type, $entity_id);
+}
+
+/**
+ * Checks view access for a loaded entity that may be in trash.
+ *
+ * Entity-specific modules should call this from their normal access hook.
+ * Restore and purge routes remain protected by their dedicated permissions.
+ */
+function recycle_bin_entity_access($entity_type, $entity, $account = NULL) {
+  if (!$entity) {
+    return FALSE;
+  }
+  $adapter = recycle_bin_get_adapter($entity_type);
+  if (!$adapter) {
+    return TRUE;
+  }
+  $entity_id = recycle_bin_adapter_entity_id($adapter, $entity);
+  if (!$entity_id || !recycle_bin_is_trashed($entity_type, $entity_id)) {
+    return TRUE;
+  }
+  return user_access('view deleted entities', $account);
+}
+
+/**
+ * Soft-deletes a set of loaded nodes without invoking core delete hooks.
+ */
+function recycle_bin_soft_delete_nodes(array $nodes) {
+  recycle_bin_soft_delete_entities('node', $nodes, recycle_bin_get_adapter('node'));
+}
+
+/**
+ * Soft-deletes loaded entities without invoking permanent-delete hooks.
+ */
+function recycle_bin_soft_delete_entities($entity_type, array $entities, $adapter) {
+  $transaction = db_transaction();
+  try {
+    foreach ($entities as $entity) {
+      $entity_id = recycle_bin_adapter_entity_id($adapter, $entity);
+      $bundle = NULL;
+      if (!empty($adapter['bundle key']) && isset($entity->{$adapter['bundle key']})) {
+        $bundle = $entity->{$adapter['bundle key']};
+      }
+      elseif (method_exists($entity, 'bundle')) {
+        $bundle = $entity->bundle();
+      }
+      $revision = NULL;
+      if (!empty($adapter['revision key']) && isset($entity->{$adapter['revision key']})) {
+        $revision = $entity->{$adapter['revision key']};
+      }
+      db_merge('recycle_bin_entity')
+        ->key(array(
+          'entity_type' => $entity_type,
+          'entity_id' => (string) $entity_id,
+        ))
+        ->fields(array(
+          'bundle' => $bundle,
+          'deleted' => REQUEST_TIME,
+          'deleted_uid' => !empty($GLOBALS['user']->uid) ? $GLOBALS['user']->uid : 0,
+          'deleted_vid' => $revision,
+        ))
+        ->execute();
+    }
+    if (!empty($adapter['cache reset callback']) && function_exists($adapter['cache reset callback'])) {
+      call_user_func($adapter['cache reset callback'], array_keys($entities));
+    }
+    else {
+      entity_get_controller($entity_type)->resetCache(array_keys($entities));
+    }
+    db_ignore_replica();
+  }
+  catch (Exception $e) {
+    $transaction->rollback();
+    watchdog_exception('recycle_bin', $e);
+    throw $e;
+  }
+
+  foreach ($entities as $entity) {
+    module_invoke_all($entity_type . '_trash_delete', $entity);
+    module_invoke_all('entity_trash_delete', $entity, $entity_type);
+  }
+}
+
+/**
+ * Restores one node from trash.
+ */
+function recycle_bin_restore_node($nid) {
+  return recycle_bin_restore_entity('node', $nid);
+}
+
+/**
+ * Restores one registered entity from trash.
+ */
+function recycle_bin_restore_entity($entity_type, $entity_id) {
+  $adapter = recycle_bin_get_adapter($entity_type);
+  $marker = recycle_bin_get_marker($entity_type, $entity_id);
+  if (!$adapter || !recycle_bin_adapter_controller_is_active($entity_type)) {
+    watchdog('recycle_bin', 'Cannot restore @type @id because its registered controller is not active.', array('@type' => $entity_type, '@id' => $entity_id), WATCHDOG_WARNING);
+    return FALSE;
+  }
+  if (!$marker) {
+    return FALSE;
+  }
+  entity_get_controller($entity_type)->resetCache(array($entity_id));
+  $entity = recycle_bin_with_context('trash', 'entity_load', array($entity_type, $entity_id));
+  if (!$entity) {
+    return FALSE;
+  }
+
+  $transaction = db_transaction();
+  try {
+    db_delete('recycle_bin_entity')
+      ->condition('entity_type', $entity_type)
+      ->condition('entity_id', (string) $entity_id)
+      ->execute();
+    entity_get_controller($entity_type)->resetCache(array($entity_id));
+    db_ignore_replica();
+  }
+  catch (Exception $e) {
+    $transaction->rollback();
+    watchdog_exception('recycle_bin', $e);
+    throw $e;
+  }
+
+  module_invoke_all($entity_type . '_trash_restore', $entity);
+  module_invoke_all('entity_trash_restore', $entity, $entity_type);
+  return TRUE;
+}
+
+/**
+ * Permanently purges one node while preserving core cleanup behavior.
+ */
+function recycle_bin_purge_node($nid) {
+  return recycle_bin_purge_entity('node', $nid);
+}
+
+/**
+ * Permanently purges one registered entity while preserving core cleanup.
+ */
+function recycle_bin_purge_entity($entity_type, $entity_id) {
+  if (!recycle_bin_adapter_controller_is_active($entity_type)) {
+    watchdog('recycle_bin', 'Cannot purge @type @id because its registered controller is not active.', array('@type' => $entity_type, '@id' => $entity_id), WATCHDOG_WARNING);
+    return FALSE;
+  }
+  if (!recycle_bin_get_marker($entity_type, $entity_id)) {
+    return FALSE;
+  }
+  entity_get_controller($entity_type)->resetCache(array($entity_id));
+  $entity = recycle_bin_with_context('trash', 'entity_load', array($entity_type, $entity_id));
+  if (!$entity) {
+    watchdog('recycle_bin', 'Cannot purge marker for missing @type @id; marker retained.', array('@type' => $entity_type, '@id' => $entity_id), WATCHDOG_WARNING);
+    return FALSE;
+  }
+
+  recycle_bin_with_context('trash', 'entity_delete_multiple', array($entity_type, array($entity_id)));
+  db_delete('recycle_bin_entity')
+    ->condition('entity_type', $entity_type)
+    ->condition('entity_id', (string) $entity_id)
+    ->execute();
+  db_ignore_replica();
+  module_invoke_all($entity_type . '_trash_purge', $entity);
+  module_invoke_all('entity_trash_purge', $entity, $entity_type);
+  return TRUE;
+}
+
+/**
+ * Implements hook_cron().
+ */
+function recycle_bin_cron() {
+  if (!config_get('recycle_bin.settings', 'auto_purge_enabled')) {
+    return;
+  }
+  $days = max(0, (int) config_get('recycle_bin.settings', 'retention_days'));
+  $limit = max(1, (int) config_get('recycle_bin.settings', 'purge_limit'));
+  $cutoff = REQUEST_TIME - ($days * 86400);
+  $rows = db_select('recycle_bin_entity', 't')
+    ->fields('t', array('entity_type', 'entity_id'))
+    ->condition('deleted', $cutoff, '<=')
+    ->orderBy('deleted', 'ASC')
+    ->range(0, $limit)
+    ->execute();
+  foreach ($rows as $row) {
+    if (recycle_bin_get_adapter($row->entity_type)) {
+      try {
+        recycle_bin_purge_entity($row->entity_type, $row->entity_id);
+      }
+      catch (Exception $e) {
+        watchdog_exception('recycle_bin', $e);
+      }
+    }
+  }
+}
+
+/**
+ * Settings access callback.
+ */
+function recycle_bin_administer_access() {
+  return user_access('administer trash');
+}
+
+/**
+ * Trash listing access callback.
+ */
+function recycle_bin_access() {
+  return user_access('access trash') || user_access('administer trash');
+}
+
+function recycle_bin_restore_access() {
+  return user_access('restore deleted entities') || user_access('administer trash');
+}
+
+function recycle_bin_purge_access() {
+  return user_access('purge deleted entities') || user_access('administer trash');
+}
+
+/**
+ * Settings form.
+ */
+function recycle_bin_settings_form($form, &$form_state) {
+  $config = config('recycle_bin.settings');
+  $types = node_type_get_types();
+  $options = array();
+  foreach ($types as $type) {
+    $options[$type->type] = $type->name;
+  }
+  $form['enabled_bundles'] = array(
+    '#type' => 'checkboxes',
+    '#title' => t('Node bundles using soft delete'),
+    '#options' => $options,
+    '#default_value' => (array) $config->get('enabled_bundles'),
+    '#description' => t('Disabled bundles continue to use Backdrop permanent deletion. No bundles are enabled by default.'),
+  );
+  $form['file_adapter_enabled'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Protect permanent managed files from direct deletion'),
+    '#default_value' => (int) $config->get('file_adapter_enabled'),
+    '#description' => t('Uses metadata-only soft deletion for permanent managed files. Temporary files and the file data itself are not moved. Direct public file URLs are not hidden by this setting.'),
+  );
+  $form['auto_purge_enabled'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Enable automatic purge'),
+    '#default_value' => (int) $config->get('auto_purge_enabled'),
+  );
+  $form['retention_days'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Retention period (days)'),
+    '#default_value' => (int) $config->get('retention_days'),
+    '#required' => TRUE,
+  );
+  $form['purge_limit'] = array(
+    '#type' => 'textfield',
+    '#title' => t('Maximum automatic purges per cron run'),
+    '#default_value' => (int) $config->get('purge_limit'),
+    '#required' => TRUE,
+  );
+  $form['actions']['submit'] = array('#type' => 'submit', '#value' => t('Save configuration'));
+  return $form;
+}
+
+function recycle_bin_settings_form_validate($form, &$form_state) {
+  if (!is_numeric($form_state['values']['retention_days']) || $form_state['values']['retention_days'] < 0) {
+    form_error($form['retention_days'], t('Retention must be zero or greater.'));
+  }
+  if (!is_numeric($form_state['values']['purge_limit']) || $form_state['values']['purge_limit'] < 1) {
+    form_error($form['purge_limit'], t('Purge limit must be at least one.'));
+  }
+}
+
+function recycle_bin_settings_form_submit($form, &$form_state) {
+  $values = $form_state['values'];
+  $enabled = array_values(array_filter((array) $values['enabled_bundles']));
+  config('recycle_bin.settings')
+    ->set('enabled_bundles', $enabled)
+    ->set('file_adapter_enabled', !empty($values['file_adapter_enabled']))
+    ->set('auto_purge_enabled', !empty($values['auto_purge_enabled']))
+    ->set('retention_days', (int) $values['retention_days'])
+    ->set('purge_limit', (int) $values['purge_limit'])
+    ->save();
+  backdrop_set_message(t('Recycle Bin configuration saved.'));
+}
+
+/**
+ * Lists current node markers.
+ */
+function recycle_bin_listing() {
+  $query = db_select('recycle_bin_entity', 't')
+    ->fields('t')
+    ->condition('entity_type', 'node')
+    ->orderBy('deleted', 'DESC');
+  $query->extend('PagerDefault')->limit(50);
+  $rows = array();
+  foreach ($query->execute() as $marker) {
+    $node = recycle_bin_with_context('trash', 'node_load', array($marker->entity_id, NULL, TRUE));
+    $title = $node ? $node->title : t('[Missing node @nid]', array('@nid' => $marker->entity_id));
+    $operations = array();
+    if ($node) {
+      $operations[] = l(t('Restore'), 'admin/content/recycle-bin/' . $marker->entity_id . '/restore');
+      $operations[] = l(t('Purge'), 'admin/content/recycle-bin/' . $marker->entity_id . '/purge');
+    }
+    $rows[] = array(
+      check_plain($title),
+      check_plain($marker->bundle),
+      format_date($marker->deleted),
+      implode(' | ', $operations),
+    );
+  }
+  $build['table'] = array(
+    '#theme' => 'table',
+    '#header' => array(t('Title'), t('Bundle'), t('Deleted'), t('Operations')),
+    '#rows' => $rows,
+    '#empty' => t('The Recycle Bin is empty.'),
+  );
+  $build['pager'] = array('#theme' => 'pager');
+  return $build;
+}
+
+/**
+ * Restore confirmation form.
+ */
+function recycle_bin_restore_form($form, &$form_state, $nid) {
+  $form['nid'] = array('#type' => 'value', '#value' => (int) $nid);
+  $form['question'] = array('#markup' => '<p>' . t('Restore this node? Its stored content and revision remain unchanged.') . '</p>');
+  return confirm_form($form, t('Restore node'), 'admin/content/recycle-bin', t('The node will become visible to normal queries again.'), t('Restore'));
+}
+
+function recycle_bin_restore_form_submit($form, &$form_state) {
+  if (recycle_bin_restore_node($form_state['values']['nid'])) {
+    backdrop_set_message(t('Node restored.'));
+  }
+  else {
+    backdrop_set_message(t('The node could not be restored.'), 'error');
+  }
+  $form_state['redirect'] = 'admin/content/recycle-bin';
+}
+
+/**
+ * Purge confirmation form.
+ */
+function recycle_bin_purge_form($form, &$form_state, $nid) {
+  $form['nid'] = array('#type' => 'value', '#value' => (int) $nid);
+  $form['question'] = array('#markup' => '<p>' . t('Permanently delete this node and all core-managed data? This cannot be undone.') . '</p>');
+  return confirm_form($form, t('Purge node'), 'admin/content/recycle-bin', t('Core delete hooks and cleanup will run.'), t('Purge'));
+}
+
+function recycle_bin_purge_form_submit($form, &$form_state) {
+  if (recycle_bin_purge_node($form_state['values']['nid'])) {
+    backdrop_set_message(t('Node permanently deleted.'));
+  }
+  else {
+    backdrop_set_message(t('The node could not be purged.'), 'error');
+  }
+  $form_state['redirect'] = 'admin/content/recycle-bin';
+}

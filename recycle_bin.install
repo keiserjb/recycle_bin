@@ -1,0 +1,113 @@
+<?php
+
+/**
+ * @file
+ * Install, update, and uninstall hooks for Recycle Bin.
+ */
+
+/**
+ * Implements hook_schema().
+ */
+function recycle_bin_schema() {
+  $schema['recycle_bin_entity'] = array(
+    'description' => 'Current soft-delete markers for Recycle Bin entities.',
+    'fields' => array(
+      'entity_type' => array(
+        'type' => 'varchar',
+        'length' => 32,
+        'not null' => TRUE,
+      ),
+      'entity_id' => array(
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => TRUE,
+      ),
+      'bundle' => array(
+        'type' => 'varchar',
+        'length' => 128,
+        'not null' => FALSE,
+      ),
+      'deleted' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
+      'deleted_uid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => FALSE,
+      ),
+      'deleted_vid' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => FALSE,
+      ),
+    ),
+    'primary key' => array('entity_type', 'entity_id'),
+    'indexes' => array(
+      'deleted' => array('deleted'),
+      'bundle' => array('entity_type', 'bundle'),
+    ),
+  );
+  return $schema;
+}
+
+/**
+ * Returns the legacy configuration snapshot schema for update compatibility.
+ *
+ * New configuration snapshots are owned by config_history. This function is
+ * retained only so sites upgrading from the earlier Recycle Bin build can
+ * complete update 7001 and let config_history migrate the old table.
+ */
+function recycle_bin_legacy_config_snapshot_schema() {
+  return array(
+    'description' => 'Legacy configuration snapshots awaiting config_history migration.',
+    'fields' => array(
+      'snapshot_id' => array('type' => 'serial', 'unsigned' => TRUE, 'not null' => TRUE),
+      'config_name' => array('type' => 'varchar', 'length' => 250, 'not null' => TRUE),
+      'data' => array('type' => 'text', 'size' => 'big', 'not null' => TRUE),
+      'created' => array('type' => 'int', 'unsigned' => TRUE, 'not null' => TRUE),
+      'uid' => array('type' => 'int', 'unsigned' => TRUE, 'not null' => TRUE, 'default' => 0),
+      'operation' => array('type' => 'varchar', 'length' => 32, 'not null' => TRUE),
+    ),
+    'primary key' => array('snapshot_id'),
+    'indexes' => array(
+      'config_name' => array('config_name'),
+      'created' => array('created'),
+    ),
+  );
+}
+
+/**
+ * Adds managed-file settings and, for legacy installs, the old snapshot table
+ * that config_history can migrate.
+ */
+function recycle_bin_update_7001() {
+  if (!db_table_exists('recycle_bin_config_snapshot')) {
+    db_create_table('recycle_bin_config_snapshot', recycle_bin_legacy_config_snapshot_schema());
+  }
+  $config = config('recycle_bin.settings');
+  if ($config->get('file_adapter_enabled') === NULL) {
+    $config->set('file_adapter_enabled', FALSE)->save();
+  }
+}
+
+/**
+ * Implements hook_install().
+ */
+function recycle_bin_install() {
+  config_install_default_config('module', 'recycle_bin');
+}
+
+/**
+ * Implements hook_uninstall().
+ */
+function recycle_bin_uninstall() {
+  config_uninstall_config('recycle_bin');
+  foreach (array('recycle_bin_entity') as $table) {
+    if (db_table_exists($table)) {
+      db_drop_table($table);
+    }
+  }
+}

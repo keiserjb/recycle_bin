@@ -1,0 +1,124 @@
+<?php
+
+/**
+ * @file
+ * SimpleTest coverage for node soft-delete lifecycle.
+ */
+
+class RecycleBinNodeTestCase extends BackdropWebTestCase {
+
+  public static function getInfo() {
+    return array(
+      'name' => 'Recycle Bin node lifecycle',
+      'description' => 'Checks soft delete, hidden loading, restore, and purge.',
+      'group' => 'Recycle Bin',
+    );
+  }
+
+  protected function setUp() {
+    parent::setUp(array('node', 'recycle_bin', 'entity_test', 'recycle_bin_adapter_test'));
+    config('recycle_bin.settings')->set('enabled_bundles', array('article'))->save();
+  }
+
+  public function testSoftDeleteRestoreAndPurge() {
+    $node = $this->backdropCreateNode(array(
+      'type' => 'article',
+      'title' => 'Recycle Bin fixture',
+      'body' => array(LANGUAGE_NONE => array(array('value' => 'unchanged body'))),
+    ));
+    $nid = $node->nid;
+
+    node_delete($nid);
+    $this->assertTrue((bool) recycle_bin_get_marker('node', $nid), 'Soft delete creates a marker.');
+    $this->assertFalse(node_load($nid, NULL, TRUE), 'Active node loading hides the trashed node.');
+
+    $trashed = recycle_bin_with_context('trash', 'node_load', array($nid, NULL, TRUE));
+    $this->assertEqual($trashed->title, 'Recycle Bin fixture', 'Trash context loads the original node.');
+    $this->assertEqual($trashed->body[LANGUAGE_NONE][0]['value'], 'unchanged body', 'Trash context preserves field data.');
+
+    $this->assertTrue(recycle_bin_restore_node($nid), 'Restore succeeds.');
+    $restored = node_load($nid, NULL, TRUE);
+    $this->assertEqual($restored->title, 'Recycle Bin fixture', 'Restored node is visible with the same title.');
+    $this->assertFalse(recycle_bin_get_marker('node', $nid), 'Restore removes the marker.');
+
+    node_delete($nid);
+    $this->assertTrue(recycle_bin_purge_node($nid), 'Purge succeeds.');
+    $this->assertFalse(node_load($nid, NULL, TRUE), 'Purged node no longer exists.');
+    $this->assertFalse(recycle_bin_get_marker('node', $nid), 'Purge removes the marker.');
+  }
+
+  /**
+   * Disabled bundles retain Backdrop's permanent-delete behavior.
+   */
+  public function testDisabledBundleIsNotSoftDeleted() {
+    $node = $this->backdropCreateNode(array(
+      'type' => 'page',
+      'title' => 'Recycle Bin disabled fixture',
+    ));
+    $nid = $node->nid;
+    node_delete($nid);
+    $this->assertFalse(recycle_bin_is_trashed('node', $nid), 'Disabled bundle does not create a marker.');
+    $this->assertFalse(node_load($nid, NULL, TRUE), 'Disabled bundle is permanently deleted.');
+  }
+
+  /**
+   * Temporary contexts are restored even when the callback throws.
+   */
+  public function testContextRestoresAfterException() {
+    try {
+      recycle_bin_with_context('trash', function() {
+        throw new Exception('fixture exception');
+      });
+    }
+    catch (Exception $e) {
+      $this->assertEqual($e->getMessage(), 'fixture exception', 'The callback exception is preserved.');
+    }
+    $this->assertEqual(recycle_bin_context(), 'active', 'Context returns to active after an exception.');
+  }
+
+  /**
+   * A custom entity module can register and run through the same lifecycle.
+   */
+  public function testRegisteredCustomEntityAdapter() {
+    $this->assertTrue((bool) recycle_bin_get_adapter('entity_test'), 'The fixture adapter is registered.');
+    $entity = entity_create('entity_test', array('name' => 'Trash adapter fixture'));
+    entity_get_controller('entity_test')->save($entity);
+    $id = $entity->id;
+
+    entity_delete_multiple('entity_test', array($id));
+    $this->assertTrue(recycle_bin_is_trashed('entity_test', $id), 'Custom entity delete creates a marker.');
+    $this->assertFalse(entity_load('entity_test', $id), 'Active custom entity loading hides the marker.');
+
+    $trashed = recycle_bin_with_context('trash', 'entity_load', array('entity_test', $id));
+    $this->assertEqual($trashed->name, 'Trash adapter fixture', 'Trash context loads the custom entity.');
+    $this->assertTrue(recycle_bin_restore_entity('entity_test', $id), 'Custom entity restore succeeds.');
+    $this->assertEqual(entity_load('entity_test', $id)->name, 'Trash adapter fixture', 'Restored custom entity remains unchanged.');
+
+    entity_delete_multiple('entity_test', array($id));
+    $this->assertTrue(recycle_bin_purge_entity('entity_test', $id), 'Custom entity purge succeeds.');
+    $this->assertFalse(entity_load('entity_test', $id), 'Purged custom entity is gone.');
+  }
+
+  /**
+   * Permanent managed files can be restored without moving their data.
+   */
+  public function testManagedFileAdapter() {
+    config('recycle_bin.settings')->set('file_adapter_enabled', TRUE)->save();
+    $uri = 'public://recycle-bin-file-' . REQUEST_TIME . '.txt';
+    $file = file_save_data('Recycle Bin managed file fixture', $uri, FILE_EXISTS_RENAME);
+    $fid = $file->fid;
+
+    file_delete($fid);
+    $this->assertTrue(recycle_bin_is_trashed('file', $fid), 'Direct managed-file deletion creates a marker.');
+    $this->assertFalse(file_load($fid), 'Active file loading hides the trashed file.');
+    $this->assertTrue((bool) recycle_bin_with_context('trash', 'file_load', array($fid)), 'Trash context loads the original file metadata.');
+    $this->assertTrue(file_exists($uri), 'Metadata-only deletion preserves the file data.');
+
+    $this->assertTrue(recycle_bin_restore_entity('file', $fid), 'Managed file restore succeeds.');
+    file_delete($fid);
+    $this->assertTrue(recycle_bin_purge_entity('file', $fid), 'Managed file purge succeeds.');
+    $this->assertFalse(file_exists($uri), 'Managed file purge removes the file data.');
+    config('recycle_bin.settings')->set('file_adapter_enabled', FALSE)->save();
+  }
+
+}
