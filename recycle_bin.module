@@ -28,7 +28,7 @@ function recycle_bin_permission() {
     ),
     'access recycle bin' => array(
       'title' => t('Access Recycle Bin'),
-      'description' => t('View the Recycle Bin listing and deleted nodes.'),
+      'description' => t('View the Recycle Bin listing and deleted entities.'),
     ),
     'view deleted entities' => array(
       'title' => t('View deleted entities'),
@@ -295,6 +295,20 @@ function recycle_bin_menu() {
     'title' => 'Purge',
     'page callback' => 'backdrop_get_form',
     'page arguments' => array('recycle_bin_purge_form', 3),
+    'access callback' => 'recycle_bin_purge_access',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/recycle-bin/%/%/restore'] = array(
+    'title' => 'Restore',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => array('recycle_bin_entity_restore_form', 3, 4),
+    'access callback' => 'recycle_bin_restore_access',
+    'type' => MENU_CALLBACK,
+  );
+  $items['admin/content/recycle-bin/%/%/purge'] = array(
+    'title' => 'Purge',
+    'page callback' => 'backdrop_get_form',
+    'page arguments' => array('recycle_bin_entity_purge_form', 3, 4),
     'access callback' => 'recycle_bin_purge_access',
     'type' => MENU_CALLBACK,
   );
@@ -644,7 +658,12 @@ function recycle_bin_purge_entity($entity_type, $entity_id) {
     return FALSE;
   }
 
-  recycle_bin_with_context('recycle_bin', 'entity_delete_multiple', array($entity_type, array($entity_id)));
+  // Use the ignore context for the original delete path. The entity itself is
+  // already loaded from the Recycle Bin, but core delete hooks must still be
+  // able to load active related entities such as files referenced by a node's
+  // file field. Recycle Bin context would hide those unmarked files and skip
+  // their usage cleanup.
+  recycle_bin_with_context('ignore', 'entity_delete_multiple', array($entity_type, array($entity_id)));
   db_delete('recycle_bin_entity')
     ->condition('entity_type', $entity_type)
     ->condition('entity_id', (string) $entity_id)
@@ -772,33 +791,65 @@ function recycle_bin_settings_form_submit($form, &$form_state) {
 }
 
 /**
- * Lists current node markers.
+ * Returns a display label for a deleted entity.
+ */
+function recycle_bin_entity_label($entity_type, $entity, $entity_id) {
+  if (!$entity) {
+    return t('[Missing @type @id]', array('@type' => $entity_type, '@id' => $entity_id));
+  }
+  if ($entity_type === 'node' && isset($entity->title)) {
+    return $entity->title;
+  }
+  if ($entity_type === 'file') {
+    return !empty($entity->filename) ? $entity->filename : $entity->uri;
+  }
+  return entity_label($entity_type, $entity);
+}
+
+/**
+ * Lists current Recycle Bin markers for all registered adapters.
  */
 function recycle_bin_listing() {
   $query = db_select('recycle_bin_entity', 't')
     ->fields('t')
-    ->condition('entity_type', 'node')
     ->orderBy('deleted', 'DESC');
   $query->extend('PagerDefault')->limit(50);
   $rows = array();
   foreach ($query->execute() as $marker) {
-    $node = recycle_bin_with_context('recycle_bin', 'node_load', array($marker->entity_id, NULL, TRUE));
-    $title = $node ? $node->title : t('[Missing node @nid]', array('@nid' => $marker->entity_id));
+    $adapter = recycle_bin_get_adapter($marker->entity_type);
+    if (!$adapter) {
+      continue;
+    }
+    $entity = recycle_bin_with_context('recycle_bin', 'entity_load', array($marker->entity_type, $marker->entity_id));
+    $title = recycle_bin_entity_label($marker->entity_type, $entity, $marker->entity_id);
     $operations = array();
-    if ($node) {
-      $operations[] = l(t('Restore'), 'admin/content/recycle-bin/' . $marker->entity_id . '/restore');
-      $operations[] = l(t('Purge'), 'admin/content/recycle-bin/' . $marker->entity_id . '/purge');
+    if ($entity) {
+      if ($marker->entity_type === 'node') {
+        $restore_path = 'admin/content/recycle-bin/' . $marker->entity_id . '/restore';
+        $purge_path = 'admin/content/recycle-bin/' . $marker->entity_id . '/purge';
+      }
+      else {
+        $restore_path = 'admin/content/recycle-bin/' . $marker->entity_type . '/' . $marker->entity_id . '/restore';
+        $purge_path = 'admin/content/recycle-bin/' . $marker->entity_type . '/' . $marker->entity_id . '/purge';
+      }
+      $operations[] = l(t('Restore'), $restore_path);
+      $operations[] = l(t('Purge'), $purge_path);
     }
     $rows[] = array(
       check_plain($title),
+      check_plain($marker->entity_type),
       check_plain($marker->bundle),
       format_date($marker->deleted),
       implode(' | ', $operations),
     );
+    // The entity was loaded in Recycle Bin context for display. Do not leave
+    // that object in the normal entity cache where an active load in this
+    // request could bypass the marker visibility filter.
+    entity_get_controller($marker->entity_type)->resetCache(array($marker->entity_id));
   }
   $build['table'] = array(
     '#theme' => 'table',
-    '#header' => array(t('Title'), t('Bundle'), t('Deleted'), t('Operations')),
+    '#header' => array(t('Item'), t('Type'), t('Bundle'), t('Deleted'), t('Operations')),
     '#rows' => $rows,
     '#empty' => t('The Recycle Bin is empty.'),
   );
@@ -840,6 +891,54 @@ function recycle_bin_purge_form_submit($form, &$form_state) {
   }
   else {
     backdrop_set_message(t('The node could not be purged.'), 'error');
+  }
+  $form_state['redirect'] = 'admin/content/recycle-bin';
+}
+
+/**
+ * Generic restore confirmation form for registered entity adapters.
+ */
+function recycle_bin_entity_restore_form($form, &$form_state, $entity_type, $entity_id) {
+  $entity = recycle_bin_with_context('recycle_bin', 'entity_load', array($entity_type, $entity_id));
+  $label = recycle_bin_entity_label($entity_type, $entity, $entity_id);
+  $form['entity_type'] = array('#type' => 'value', '#value' => $entity_type);
+  $form['entity_id'] = array('#type' => 'value', '#value' => $entity_id);
+  $form['question'] = array('#markup' => '<p>' . t('Restore %label? The stored entity and its data will remain unchanged.', array('%label' => $label)) . '</p>');
+  return confirm_form($form, t('Restore item'), 'admin/content/recycle-bin', t('The item will become visible to normal queries again.'), t('Restore'));
+}
+
+function recycle_bin_entity_restore_form_submit($form, &$form_state) {
+  $type = $form_state['values']['entity_type'];
+  $id = $form_state['values']['entity_id'];
+  if (recycle_bin_restore_entity($type, $id)) {
+    backdrop_set_message(t('The @type was restored.', array('@type' => $type)));
+  }
+  else {
+    backdrop_set_message(t('The @type could not be restored.', array('@type' => $type)), 'error');
+  }
+  $form_state['redirect'] = 'admin/content/recycle-bin';
+}
+
+/**
+ * Generic purge confirmation form for registered entity adapters.
+ */
+function recycle_bin_entity_purge_form($form, &$form_state, $entity_type, $entity_id) {
+  $entity = recycle_bin_with_context('recycle_bin', 'entity_load', array($entity_type, $entity_id));
+  $label = recycle_bin_entity_label($entity_type, $entity, $entity_id);
+  $form['entity_type'] = array('#type' => 'value', '#value' => $entity_type);
+  $form['entity_id'] = array('#type' => 'value', '#value' => $entity_id);
+  $form['question'] = array('#markup' => '<p>' . t('Permanently delete %label? This cannot be undone.', array('%label' => $label)) . '</p>');
+  return confirm_form($form, t('Purge item'), 'admin/content/recycle-bin', t('Core delete hooks and cleanup will run.'), t('Purge'));
+}
+
+function recycle_bin_entity_purge_form_submit($form, &$form_state) {
+  $type = $form_state['values']['entity_type'];
+  $id = $form_state['values']['entity_id'];
+  if (recycle_bin_purge_entity($type, $id)) {
+    backdrop_set_message(t('The @type was permanently deleted.', array('@type' => $type)));
+  }
+  else {
+    backdrop_set_message(t('The @type could not be purged.', array('@type' => $type)), 'error');
   }
   $form_state['redirect'] = 'admin/content/recycle-bin';
 }

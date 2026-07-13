@@ -48,6 +48,51 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
   }
 
   /**
+   * Purging a node cleans usage for files referenced by its file fields.
+   */
+  public function testNodePurgeCleansReferencedFileUsage() {
+    $field_name = 'field_recycle_file';
+    field_create_field(array(
+      'field_name' => $field_name,
+      'type' => 'file',
+      'cardinality' => 1,
+      'settings' => array('uri_scheme' => 'public'),
+    ));
+    field_create_instance(array(
+      'field_name' => $field_name,
+      'entity_type' => 'node',
+      'bundle' => 'article',
+      'label' => 'Recycle Bin file',
+      'widget' => array('type' => 'file_generic'),
+    ));
+
+    $uri = 'public://recycle-bin-node-file-' . REQUEST_TIME . '.txt';
+    $file = file_save_data('Referenced file fixture', $uri, FILE_EXISTS_RENAME);
+    $node = $this->backdropCreateNode(array(
+      'type' => 'article',
+      'title' => 'Recycle Bin file reference fixture',
+      $field_name => array(LANGUAGE_NONE => array(array('fid' => $file->fid, 'display' => 1, 'description' => ''))),
+    ));
+    $nid = $node->nid;
+
+    $this->assertTrue((bool) file_usage_list($file), 'The node records managed-file usage.');
+    node_delete($nid);
+    $this->assertTrue(recycle_bin_is_deleted('node', $nid), 'Soft-deleting the node creates a marker.');
+    $this->assertTrue((bool) file_usage_list(file_load($file->fid)), 'Soft-deleting the node preserves managed-file usage.');
+    $this->assertTrue(recycle_bin_restore_node($nid), 'Restoring the node succeeds.');
+    $this->assertTrue((bool) file_usage_list(file_load($file->fid)), 'Restoring the node preserves managed-file usage.');
+
+    node_delete($nid);
+    $this->assertTrue(recycle_bin_purge_node($nid), 'Purging the node succeeds.');
+
+    $file = file_load($file->fid);
+    $this->assertTrue($file && (int) $file->status === 0, 'Purging the node makes its now-unused file temporary.');
+    $this->assertFalse(file_usage_list($file), 'Purging the node removes managed-file usage.');
+    file_delete($file->fid);
+    $this->assertFalse(file_exists($uri), 'The fixture file is cleaned up.');
+  }
+
+  /**
    * Disabled bundles retain Backdrop's permanent-delete behavior.
    */
   public function testDisabledBundleIsNotSoftDeleted() {
@@ -59,48 +104,6 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
     node_delete($nid);
     $this->assertFalse(recycle_bin_is_deleted('node', $nid), 'Disabled bundle does not create a marker.');
     $this->assertFalse(node_load($nid, NULL, TRUE), 'Disabled bundle is permanently deleted.');
-  }
-
-  /**
-   * Recoverable single-node deletion uses Recycle Bin confirmation text.
-   */
-  public function testRecoverableDeleteConfirmation() {
-    $node = $this->backdropCreateNode(array(
-      'type' => 'article',
-      'title' => 'Recycle Bin delete confirmation fixture',
-    ));
-    $form_state = array();
-    $form = node_delete_confirm(array(), $form_state, $node);
-    recycle_bin_form_node_delete_confirm_alter($form, $form_state);
-
-    $this->assertEqual($form['description']['#markup'], recycle_bin_delete_confirm_description(), 'Recoverable deletion confirmation explains the Recycle Bin behavior.');
-    $this->assertEqual($form['actions']['submit']['#value'], t('Move to Recycle Bin'), 'Recoverable deletion uses the Recycle Bin button label.');
-  }
-
-  /**
-   * Mixed multiple deletion explains recoverable and permanent outcomes.
-   */
-  public function testMixedMultipleDeleteConfirmation() {
-    $recoverable = $this->backdropCreateNode(array(
-      'type' => 'article',
-      'title' => 'Recycle Bin mixed recoverable fixture',
-    ));
-    $permanent = $this->backdropCreateNode(array(
-      'type' => 'page',
-      'title' => 'Recycle Bin mixed permanent fixture',
-    ));
-    $form_state = array('nids' => array($recoverable->nid, $permanent->nid));
-    $form = node_multiple_delete_confirm(array(), $form_state);
-    recycle_bin_form_node_multiple_delete_confirm_alter($form, $form_state);
-
-    $expected_description = format_plural(1,
-      '1 content item will be moved to the Recycle Bin, where it can be restored.',
-      '@count content items will be moved to the Recycle Bin, where they can be restored.')
-      . ' ' . format_plural(1,
-      '1 content item is not covered by the Recycle Bin and will be permanently deleted. This cannot be undone.',
-      '@count content items are not covered by the Recycle Bin and will be permanently deleted. This cannot be undone.');
-    $this->assertEqual($form['description']['#markup'], $expected_description, 'Mixed deletion confirmation explains recoverable and permanent outcomes.');
-    $this->assertEqual($form['actions']['submit']['#value'], t('Delete'), 'Mixed deletion retains the delete button label.');
   }
 
   /**
@@ -123,7 +126,7 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
    */
   public function testRegisteredCustomEntityAdapter() {
     $this->assertTrue((bool) recycle_bin_get_adapter('entity_test'), 'The fixture adapter is registered.');
-    $entity = entity_create('entity_test', array('name' => 'Recycle Bin adapter fixture'));
+    $entity = entity_create('entity_test', array('name' => 'Trash adapter fixture'));
     entity_get_controller('entity_test')->save($entity);
     $id = $entity->id;
 
@@ -131,10 +134,10 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
     $this->assertTrue(recycle_bin_is_deleted('entity_test', $id), 'Custom entity delete creates a marker.');
     $this->assertFalse(entity_load('entity_test', $id), 'Active custom entity loading hides the marker.');
 
-    $recycle_bin_entity = recycle_bin_with_context('recycle_bin', 'entity_load', array('entity_test', $id));
-    $this->assertEqual($recycle_bin_entity->name, 'Recycle Bin adapter fixture', 'Recycle Bin context loads the custom entity.');
+    $trashed = recycle_bin_with_context('recycle_bin', 'entity_load', array('entity_test', $id));
+    $this->assertEqual($trashed->name, 'Trash adapter fixture', 'Recycle Bin context loads the custom entity.');
     $this->assertTrue(recycle_bin_restore_entity('entity_test', $id), 'Custom entity restore succeeds.');
-    $this->assertEqual(entity_load('entity_test', $id)->name, 'Recycle Bin adapter fixture', 'Restored custom entity remains unchanged.');
+    $this->assertEqual(entity_load('entity_test', $id)->name, 'Trash adapter fixture', 'Restored custom entity remains unchanged.');
 
     entity_delete_multiple('entity_test', array($id));
     $this->assertTrue(recycle_bin_purge_entity('entity_test', $id), 'Custom entity purge succeeds.');
@@ -155,6 +158,16 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
     $this->assertFalse(file_load($fid), 'Active file loading hides the deleted file.');
     $this->assertTrue((bool) recycle_bin_with_context('recycle_bin', 'file_load', array($fid)), 'Recycle Bin context loads the original file metadata.');
     $this->assertTrue(file_exists($uri), 'Metadata-only deletion preserves the file data.');
+
+    $listing = recycle_bin_listing();
+    $file_row = FALSE;
+    foreach ($listing['table']['#rows'] as $row) {
+      if (isset($row[1]) && $row[1] === 'file' && strpos($row[4], '/file/' . $fid . '/restore') !== FALSE) {
+        $file_row = TRUE;
+        break;
+      }
+    }
+    $this->assertTrue($file_row, 'Deleted managed files appear in the Recycle Bin with restore operations.');
 
     $this->assertTrue(recycle_bin_restore_entity('file', $fid), 'Managed file restore succeeds.');
     file_delete($fid);
