@@ -38,9 +38,6 @@ after reviewing the metadata-only behavior and the direct-URL limitation.
 Automatic purge is disabled by default. When enabled, the retention period and
 per-cron limit apply to deleted entities.
 
-Configuration history is intentionally separate from Recycle Bin. Install the
-`config_history` module when configuration snapshots and rollback are needed.
-
 ## API
 
 Contrib and custom entity modules can register an adapter with
