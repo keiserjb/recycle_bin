@@ -24,23 +24,23 @@ function recycle_bin_permission() {
   return array(
     'administer recycle bin' => array(
       'title' => t('Administer Recycle Bin'),
-      'description' => t('Configure which node bundles use soft delete and automatic purge.'),
+      'description' => t('Configure which content types send deleted items to the Recycle Bin (instead of deleting them right away) and automatic permanent deletion.'),
     ),
     'access recycle bin' => array(
       'title' => t('Access Recycle Bin'),
-      'description' => t('View the Recycle Bin listing and deleted entities.'),
+      'description' => t('View the Recycle Bin listing and deleted items.'),
     ),
     'view deleted entities' => array(
-      'title' => t('View deleted entities'),
-      'description' => t('Load and inspect entities in the Recycle Bin.'),
+      'title' => t('View deleted items'),
+      'description' => t('Load and inspect items in the Recycle Bin.'),
     ),
     'restore deleted entities' => array(
-      'title' => t('Restore deleted entities'),
-      'description' => t('Restore entities from the Recycle Bin.'),
+      'title' => t('Restore deleted items'),
+      'description' => t('Restore items from the Recycle Bin.'),
     ),
     'purge deleted entities' => array(
-      'title' => t('Purge deleted entities'),
-      'description' => t('Permanently delete entities from the Recycle Bin.'),
+      'title' => t('Permanently delete items'),
+      'description' => t('Permanently delete items from the Recycle Bin. This cannot be undone.'),
     ),
   );
 }
@@ -271,7 +271,7 @@ function recycle_bin_adapter_alter_load_query($query, $entity_type) {
 function recycle_bin_menu() {
   $items['admin/config/content/recycle-bin'] = array(
     'title' => 'Recycle Bin',
-    'description' => 'Configure soft deletion and automatic purge.',
+    'description' => 'Configure which content types are sent to the Recycle Bin on delete, and automatic permanent deletion.',
     'page callback' => 'backdrop_get_form',
     'page arguments' => array('recycle_bin_settings_form'),
     'access callback' => 'recycle_bin_administer_access',
@@ -279,7 +279,7 @@ function recycle_bin_menu() {
   );
   $items['admin/content/recycle-bin'] = array(
     'title' => 'Recycle Bin',
-    'description' => 'Review, restore, or purge deleted content.',
+    'description' => 'Review, restore, or permanently delete deleted content.',
     'page callback' => 'recycle_bin_listing',
     'access callback' => 'recycle_bin_access',
     'type' => MENU_LOCAL_TASK,
@@ -292,7 +292,7 @@ function recycle_bin_menu() {
     'type' => MENU_CALLBACK,
   );
   $items['admin/content/recycle-bin/%/purge'] = array(
-    'title' => 'Purge',
+    'title' => 'Delete permanently',
     'page callback' => 'backdrop_get_form',
     'page arguments' => array('recycle_bin_purge_form', 3),
     'access callback' => 'recycle_bin_purge_access',
@@ -306,7 +306,7 @@ function recycle_bin_menu() {
     'type' => MENU_CALLBACK,
   );
   $items['admin/content/recycle-bin/%/%/purge'] = array(
-    'title' => 'Purge',
+    'title' => 'Delete permanently',
     'page callback' => 'backdrop_get_form',
     'page arguments' => array('recycle_bin_entity_purge_form', 3, 4),
     'access callback' => 'recycle_bin_purge_access',
@@ -736,31 +736,33 @@ function recycle_bin_settings_form($form, &$form_state) {
   }
   $form['enabled_bundles'] = array(
     '#type' => 'checkboxes',
-    '#title' => t('Node bundles using soft delete'),
+    '#title' => t('Content types that use the Recycle Bin'),
     '#options' => $options,
     '#default_value' => (array) $config->get('enabled_bundles'),
-    '#description' => t('Disabled bundles continue to use Backdrop permanent deletion. No bundles are enabled by default.'),
+    '#description' => t('When a checked content type is deleted, it is sent to the Recycle Bin and can be restored, rather than being removed right away. Unchecked content types are deleted immediately and cannot be recovered. No content types are checked by default.'),
   );
   $form['file_adapter_enabled'] = array(
     '#type' => 'checkbox',
-    '#title' => t('Protect permanent managed files from direct deletion'),
+    '#title' => t('Send permanent managed files to the Recycle Bin instead of deleting them immediately'),
     '#default_value' => (int) $config->get('file_adapter_enabled'),
-    '#description' => t('Uses metadata-only soft deletion for permanent managed files. Temporary files and the file data itself are not moved. Direct public file URLs are not hidden by this setting.'),
+    '#description' => t('Only the file record is held in the Recycle Bin (metadata, not the file itself). Temporary files are not affected, and direct public file URLs are not hidden by this setting.'),
   );
   $form['auto_purge_enabled'] = array(
     '#type' => 'checkbox',
-    '#title' => t('Enable automatic purge'),
+    '#title' => t('Automatically and permanently delete expired items'),
+    '#description' => t('When enabled, items past their retention period below are permanently deleted during cron, instead of waiting for an administrator to do it manually.'),
     '#default_value' => (int) $config->get('auto_purge_enabled'),
   );
   $form['retention_days'] = array(
     '#type' => 'textfield',
     '#title' => t('Retention period (days)'),
+    '#description' => t('How many days an item stays in the Recycle Bin before it is eligible for permanent deletion.'),
     '#default_value' => (int) $config->get('retention_days'),
     '#required' => TRUE,
   );
   $form['purge_limit'] = array(
     '#type' => 'textfield',
-    '#title' => t('Maximum automatic purges per cron run'),
+    '#title' => t('Maximum permanent deletions per cron run'),
     '#default_value' => (int) $config->get('purge_limit'),
     '#required' => TRUE,
   );
@@ -845,7 +847,7 @@ function recycle_bin_listing() {
         $purge_path = 'admin/content/recycle-bin/' . $marker->entity_type . '/' . $marker->entity_id . '/purge';
       }
       $operations[] = l(t('Restore'), $restore_path);
-      $operations[] = l(t('Purge'), $purge_path);
+      $operations[] = l(t('Delete permanently'), $purge_path);
     }
     $rows[] = array(
       check_plain($title),
@@ -865,7 +867,7 @@ function recycle_bin_listing() {
 
   $build['table'] = array(
     '#theme' => 'table',
-    '#header' => array(t('Item'), t('Type'), t('Bundle'), t('Deleted'), t('Operations')),
+    '#header' => array(t('Item'), t('Entity type'), t('Content type'), t('Deleted'), t('Operations')),
     '#rows' => $rows,
     '#empty' => t('The Recycle Bin is empty.'),
   );
@@ -897,16 +899,16 @@ function recycle_bin_restore_form_submit($form, &$form_state) {
  */
 function recycle_bin_purge_form($form, &$form_state, $nid) {
   $form['nid'] = array('#type' => 'value', '#value' => (int) $nid);
-  $form['question'] = array('#markup' => '<p>' . t('Permanently delete this node and all core-managed data? This cannot be undone.') . '</p>');
-  return confirm_form($form, t('Purge node'), 'admin/content/recycle-bin', t('Core delete hooks and cleanup will run.'), t('Purge'));
+  $form['question'] = array('#markup' => '<p>' . t('Permanently delete this content and all its data? This cannot be undone.') . '</p>');
+  return confirm_form($form, t('Delete content permanently'), 'admin/content/recycle-bin', t('Core delete hooks and cleanup will run.'), t('Delete permanently'));
 }
 
 function recycle_bin_purge_form_submit($form, &$form_state) {
   if (recycle_bin_purge_node($form_state['values']['nid'])) {
-    backdrop_set_message(t('Node permanently deleted.'));
+    backdrop_set_message(t('Content permanently deleted.'));
   }
   else {
-    backdrop_set_message(t('The node could not be purged.'), 'error');
+    backdrop_set_message(t('The content could not be permanently deleted.'), 'error');
   }
   $form_state['redirect'] = 'admin/content/recycle-bin';
 }
@@ -919,7 +921,7 @@ function recycle_bin_entity_restore_form($form, &$form_state, $entity_type, $ent
   $label = recycle_bin_entity_label($entity_type, $entity, $entity_id);
   $form['entity_type'] = array('#type' => 'value', '#value' => $entity_type);
   $form['entity_id'] = array('#type' => 'value', '#value' => $entity_id);
-  $form['question'] = array('#markup' => '<p>' . t('Restore %label? The stored entity and its data will remain unchanged.', array('%label' => $label)) . '</p>');
+  $form['question'] = array('#markup' => '<p>' . t('Restore %label? The stored item and its data will remain unchanged.', array('%label' => $label)) . '</p>');
   return confirm_form($form, t('Restore item'), 'admin/content/recycle-bin', t('The item will become visible to normal queries again.'), t('Restore'));
 }
 
@@ -944,7 +946,7 @@ function recycle_bin_entity_purge_form($form, &$form_state, $entity_type, $entit
   $form['entity_type'] = array('#type' => 'value', '#value' => $entity_type);
   $form['entity_id'] = array('#type' => 'value', '#value' => $entity_id);
   $form['question'] = array('#markup' => '<p>' . t('Permanently delete %label? This cannot be undone.', array('%label' => $label)) . '</p>');
-  return confirm_form($form, t('Purge item'), 'admin/content/recycle-bin', t('Core delete hooks and cleanup will run.'), t('Purge'));
+  return confirm_form($form, t('Delete item permanently'), 'admin/content/recycle-bin', t('Core delete hooks and cleanup will run.'), t('Delete permanently'));
 }
 
 function recycle_bin_entity_purge_form_submit($form, &$form_state) {
@@ -954,7 +956,7 @@ function recycle_bin_entity_purge_form_submit($form, &$form_state) {
     backdrop_set_message(t('The @type was permanently deleted.', array('@type' => $type)));
   }
   else {
-    backdrop_set_message(t('The @type could not be purged.', array('@type' => $type)), 'error');
+    backdrop_set_message(t('The @type could not be permanently deleted.', array('@type' => $type)), 'error');
   }
   $form_state['redirect'] = 'admin/content/recycle-bin';
 }
@@ -970,6 +972,7 @@ function recycle_bin_form_node_delete_confirm_alter(&$form, &$form_state) {
   if (empty($form['#node']) || !recycle_bin_node_will_soft_delete($form['#node'])) {
     return;
   }
+  backdrop_set_title(t('Move %title to the Recycle Bin?', array('%title' => $form['#node']->title)), PASS_THROUGH);
   $form['description']['#markup'] = recycle_bin_delete_confirm_description();
   $form['actions']['submit']['#value'] = t('Move to Recycle Bin');
 }
@@ -996,14 +999,24 @@ function recycle_bin_form_node_multiple_delete_confirm_alter(&$form, &$form_stat
     return;
   }
   if ($permanent) {
-    $form['description']['#markup'] = format_plural($recoverable,
-      '1 content item will be moved to the Recycle Bin, where it can be restored.',
-      '@count content items will be moved to the Recycle Bin, where they can be restored.')
+    $days = (int) config_get('recycle_bin.settings', 'retention_days');
+    $recoverable_text = $days > 0
+      ? format_plural($recoverable,
+          '1 content item will be moved to the Recycle Bin, where it can be restored for @days days.',
+          '@count content items will be moved to the Recycle Bin, where they can be restored for @days days.',
+          array('@days' => $days))
+      : format_plural($recoverable,
+          '1 content item will be moved to the Recycle Bin, where it can be restored.',
+          '@count content items will be moved to the Recycle Bin, where they can be restored.');
+    $form['description']['#markup'] = $recoverable_text
       . ' ' . format_plural($permanent,
       '1 content item is not covered by the Recycle Bin and will be permanently deleted. This cannot be undone.',
       '@count content items are not covered by the Recycle Bin and will be permanently deleted. This cannot be undone.');
   }
   else {
+    backdrop_set_title(format_plural($recoverable,
+      'Move this content item to the Recycle Bin?',
+      'Move these content items to the Recycle Bin?'), PASS_THROUGH);
     $form['description']['#markup'] = recycle_bin_delete_confirm_description();
     $form['actions']['submit']['#value'] = t('Move to Recycle Bin');
   }
@@ -1021,11 +1034,67 @@ function recycle_bin_node_will_soft_delete($node) {
 }
 
 /**
+ * Implements hook_form_FORM_ID_alter() for node_type_form().
+ *
+ * Mirrors the central Recycle Bin settings page's per-content-type checkbox
+ * onto each content type's own edit form. Both read and write the same
+ * 'enabled_bundles' config list, so there is one source of truth: toggling
+ * it in either place updates the other.
+ */
+function recycle_bin_form_node_type_form_alter(&$form, &$form_state) {
+  if (empty($form['#node_type']) || !recycle_bin_administer_access()) {
+    return;
+  }
+  $type = $form['#node_type']->type;
+  $enabled = (array) config_get('recycle_bin.settings', 'enabled_bundles');
+  $form['recycle_bin'] = array(
+    '#type' => 'fieldset',
+    '#title' => t('Recycle Bin'),
+    '#collapsible' => TRUE,
+    '#collapsed' => TRUE,
+    '#group' => 'additional_settings',
+    '#weight' => 5,
+  );
+  $form['recycle_bin']['recycle_bin_enabled'] = array(
+    '#type' => 'checkbox',
+    '#title' => t('Send deleted content to the Recycle Bin'),
+    '#description' => t('When checked, deleting content of this type moves it to the Recycle Bin, where it can be restored, instead of deleting it immediately. This is the same setting as on the main !link page.', array(
+      '!link' => l(t('Recycle Bin settings'), 'admin/config/content/recycle-bin'),
+    )),
+    '#default_value' => in_array($type, $enabled, TRUE),
+  );
+  $form['#submit'][] = 'recycle_bin_node_type_form_submit';
+}
+
+/**
+ * Submit handler: syncs the per-type checkbox back into 'enabled_bundles'.
+ */
+function recycle_bin_node_type_form_submit($form, &$form_state) {
+  $type = $form_state['values']['type'];
+  $old_type = isset($form_state['values']['old_type']) ? $form_state['values']['old_type'] : $type;
+  $enabled = (array) config_get('recycle_bin.settings', 'enabled_bundles');
+  // Drop both the old machine name (in case of a rename) and the current
+  // one, then re-add the current name only if the checkbox is checked.
+  $enabled = array_diff($enabled, array($old_type, $type));
+  if (!empty($form_state['values']['recycle_bin_enabled'])) {
+    $enabled[] = $type;
+  }
+  config_set('recycle_bin.settings', 'enabled_bundles', array_values($enabled));
+}
+
+/**
  * Builds the recoverable-delete confirmation text.
  */
 function recycle_bin_delete_confirm_description() {
   $bin = recycle_bin_access()
     ? l(t('Recycle Bin'), 'admin/content/recycle-bin')
     : t('Recycle Bin');
-  return t('This content will be moved to the !bin. It can be restored from there until it is purged.', array('!bin' => $bin));
+  $days = (int) config_get('recycle_bin.settings', 'retention_days');
+  if ($days > 0) {
+    return format_plural($days,
+      'This content will be moved to the !bin. It can be restored from there for 1 day, after which it becomes eligible for permanent deletion.',
+      'This content will be moved to the !bin. It can be restored from there for @count days, after which it becomes eligible for permanent deletion.',
+      array('!bin' => $bin));
+  }
+  return t('This content will be moved to the !bin. It can be restored from there until it is permanently deleted.', array('!bin' => $bin));
 }
