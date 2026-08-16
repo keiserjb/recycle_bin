@@ -867,7 +867,7 @@ function recycle_bin_listing() {
 
   $build['table'] = array(
     '#theme' => 'table',
-    '#header' => array(t('Item'), t('Entity type'), t('Content type'), t('Deleted'), t('Operations')),
+    '#header' => array(t('Item'), t('Entity type'), t('Bundle'), t('Deleted'), t('Operations')),
     '#rows' => $rows,
     '#empty' => t('The Recycle Bin is empty.'),
   );
