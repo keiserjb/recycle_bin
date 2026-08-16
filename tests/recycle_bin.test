@@ -70,14 +70,14 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
     node_type_save($type);
     config('recycle_bin.settings')->set('enabled_bundles', array('article', $type->type))->save();
 
-    node_type_delete($type);
+    node_type_delete($type->type);
     $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('article'), 'Deleting a bundle removes only its machine name from the enabled list.');
 
     node_type_save($type);
     $this->backdropLogin($this->backdropCreateUser(array('administer content types', 'administer recycle bin')));
     $form = backdrop_get_form('node_type_form', node_type_load($type->type));
     $this->assertFalse($form['recycle_bin']['recycle_bin_enabled']['#default_value'], 'Recreated bundle is not enabled without explicit opt-in.');
-    node_type_delete($type);
+    node_type_delete($type->type);
   }
 
   public function testSoftDeleteRestoreAndPurge() {
