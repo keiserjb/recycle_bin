@@ -30,32 +30,33 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
     $this->assertTrue(isset($page_form['recycle_bin']['recycle_bin_enabled']), 'Node type form includes the Recycle Bin checkbox.');
     $this->assertFalse($page_form['recycle_bin']['recycle_bin_enabled']['#default_value'], 'Disabled bundle is unchecked on its node type form.');
 
-    $form_state = array('values' => array(
-      'type' => 'page',
-      'old_type' => 'page',
-      'recycle_bin_enabled' => 1,
-    ));
-    recycle_bin_node_type_form_submit($page_form, $form_state);
+    $this->submitNodeTypeForm('page', 'page', 1);
     $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('article', 'page'), 'Enabling a bundle adds its machine name.');
 
     $article_form = backdrop_get_form('node_type_form', node_type_load('article'));
     $this->assertTrue($article_form['recycle_bin']['recycle_bin_enabled']['#default_value'], 'Enabled bundle is checked on its node type form.');
-    $form_state = array('values' => array(
-      'type' => 'article',
-      'old_type' => 'article',
-      'recycle_bin_enabled' => 0,
-    ));
-    recycle_bin_node_type_form_submit($article_form, $form_state);
+    $this->submitNodeTypeForm('article', 'article', 0);
     $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('page'), 'Disabling a bundle removes its machine name.');
 
-    $page_form = backdrop_get_form('node_type_form', node_type_load('page'));
-    $form_state = array('values' => array(
-      'type' => 'news_page',
-      'old_type' => 'page',
-      'recycle_bin_enabled' => 1,
-    ));
-    recycle_bin_node_type_form_submit($page_form, $form_state);
+    $this->submitNodeTypeForm('page', 'news_page', 1);
     $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('news_page'), 'Renaming a bundle removes the old machine name and stores the new one.');
+  }
+
+  /**
+   * Submits a node type through the full Form API.
+   */
+  protected function submitNodeTypeForm($old_type, $type, $recycle_bin_enabled) {
+    $node_type = node_type_load($old_type);
+    $form_state = array('values' => array(
+      'name' => $node_type->name,
+      'type' => $type,
+      'old_type' => $old_type,
+      'recycle_bin_enabled' => $recycle_bin_enabled,
+      'op' => t('Save content type'),
+    ));
+    $form_state['build_info']['args'] = array($node_type);
+    backdrop_form_submit('node_type_form', $form_state);
+    $this->assertFalse(form_get_errors(), 'Node type form submission has no validation errors.');
   }
 
   /**
