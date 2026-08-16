@@ -174,12 +174,15 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
    * Temporary contexts are restored even when the callback throws.
    */
   public function testContextRestoresAfterException() {
+    $caught = FALSE;
     try {
       recycle_bin_with_context('recycle_bin', array($this, 'throwRecycleBinTestException'));
     }
     catch (Throwable $e) {
+      $caught = TRUE;
       $this->assertEqual($e->getMessage(), 'fixture exception', 'The callback exception is preserved.');
     }
+    $this->assertTrue($caught, 'The callback exception is caught by the test.');
     $this->assertEqual(recycle_bin_context(), 'active', 'Context returns to active after an exception.');
   }
 
