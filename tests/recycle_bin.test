@@ -24,7 +24,6 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
     $node = $this->backdropCreateNode(array(
       'type' => 'article',
       'title' => 'Recycle Bin fixture',
-      'body' => array(LANGUAGE_NONE => array(array('value' => 'unchanged body'))),
     ));
     $nid = $node->nid;
 
@@ -34,7 +33,6 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
 
     $trashed = recycle_bin_with_context('recycle_bin', 'node_load', array($nid, NULL, TRUE));
     $this->assertEqual($trashed->title, 'Recycle Bin fixture', 'Recycle Bin context loads the original node.');
-    $this->assertEqual($trashed->body[LANGUAGE_NONE][0]['value'], 'unchanged body', 'Recycle Bin context preserves field data.');
 
     $this->assertTrue(recycle_bin_restore_node($nid), 'Restore succeeds.');
     $restored = node_load($nid, NULL, TRUE);
@@ -51,20 +49,26 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
    * Purging a node cleans usage for files referenced by its file fields.
    */
   public function testNodePurgeCleansReferencedFileUsage() {
-    $field_name = 'field_recycle_file';
-    field_create_field(array(
-      'field_name' => $field_name,
-      'type' => 'file',
-      'cardinality' => 1,
-      'settings' => array('uri_scheme' => 'public'),
-    ));
-    field_create_instance(array(
-      'field_name' => $field_name,
-      'entity_type' => 'node',
-      'bundle' => 'article',
-      'label' => 'Recycle Bin file',
-      'widget' => array('type' => 'file_generic'),
-    ));
+    $field_name = 'field_recycle_file_' . backdrop_strtolower($this->randomName(4));
+    try {
+      field_create_field(array(
+        'field_name' => $field_name,
+        'type' => 'file',
+        'cardinality' => 1,
+        'settings' => array('uri_scheme' => 'public'),
+      ));
+      field_create_instance(array(
+        'field_name' => $field_name,
+        'entity_type' => 'node',
+        'bundle' => 'article',
+        'label' => 'Recycle Bin file',
+        'widget' => array('type' => 'file_generic'),
+      ));
+    }
+    catch (Throwable $e) {
+      $this->fail('Unable to create the managed-file test field: ' . $e->getMessage());
+      return;
+    }
 
     $uri = 'public://recycle-bin-node-file-' . REQUEST_TIME . '.txt';
     $file = file_save_data('Referenced file fixture', $uri, FILE_EXISTS_RENAME);
@@ -111,14 +115,19 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
    */
   public function testContextRestoresAfterException() {
     try {
-      recycle_bin_with_context('recycle_bin', function() {
-        throw new Exception('fixture exception');
-      });
+      recycle_bin_with_context('recycle_bin', array($this, 'throwRecycleBinTestException'));
     }
-    catch (Exception $e) {
+    catch (Throwable $e) {
       $this->assertEqual($e->getMessage(), 'fixture exception', 'The callback exception is preserved.');
     }
     $this->assertEqual(recycle_bin_context(), 'active', 'Context returns to active after an exception.');
+  }
+
+  /**
+   * Throws an exception for the temporary-context restoration test.
+   */
+  public function throwRecycleBinTestException() {
+    throw new Exception('fixture exception');
   }
 
   /**

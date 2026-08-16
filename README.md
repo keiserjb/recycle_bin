@@ -13,14 +13,15 @@ managed files. It is designed for contrib/custom integrations and keeps Backdrop
 - Adapter API for custom Backdrop entity types.
 - Bounded automatic permanent deletion of expired Recycle Bin items.
 
-Recycle Bin does not move file data when a managed file is soft-deleted. A
+Recycle Bin does not move file data when a managed file is sent to the Recycle
+Bin. A
 known public file URL may still be reachable; this feature is a recovery and
 cleanup safeguard, not an access-control or private-file mechanism.
 
-When a node is soft-deleted, its file-field usage remains intact so restoring
-the node also restores its references. Purging the node runs Backdrop's normal
-field cleanup; files with no remaining usages become temporary and are then
-removed by the normal file cleanup process.
+When a node is sent to the Recycle Bin, its file-field usage remains intact so
+restoring the node also restores its references. Purging the node runs
+Backdrop's normal field cleanup; files with no remaining usages become
+temporary and are then removed by the normal file cleanup process.
 
 ## Installation
 

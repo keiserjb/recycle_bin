@@ -1,6 +1,6 @@
 name = Recycle Bin
 type = module
-description = Soft-delete and recover opted-in Backdrop entities without destroying their content.
+description = Provides opt-in recovery for deleted Backdrop entities.
 backdrop = 1.x
 package = Content
 configure = admin/config/content/recycle-bin
