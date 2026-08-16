@@ -9,7 +9,13 @@
  * Implements hook_views_query_alter().
  */
 function recycle_bin_views_query_alter(&$view, &$query) {
-  if ($view->base_table === 'node' && recycle_bin_context() !== 'ignore') {
-    $query->add_tag('recycle_bin');
+  if (recycle_bin_context() === 'ignore') {
+    return;
+  }
+  foreach (recycle_bin_get_adapters() as $adapter) {
+    if ($view->base_table === $adapter['base table']) {
+      $query->add_tag('recycle_bin');
+      return;
+    }
   }
 }
