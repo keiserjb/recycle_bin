@@ -1,15 +1,17 @@
 # Recycle Bin
 
-Recycle Bin provides opt-in recovery for deleted Backdrop content and permanent
-managed files. It is designed for contrib/custom integrations and keeps Backdrop's normal permanent-delete behavior when an item is not enabled.
+Recycle Bin provides opt-in recovery for deleted Backdrop content and protects
+managed files from permanent deletion. It is designed for contrib/custom
+integrations and keeps Backdrop's normal permanent-delete behavior when an
+item is not enabled.
 
 ## Features
 
 - Send deleted content of selected content types to the Recycle Bin instead
   of deleting it immediately, so it can be restored.
-- Optional metadata-only protection for permanent managed files.
-- List, restore, and permanently delete deleted nodes and protected managed
-  files from the Recycle Bin administration page.
+- Optional metadata-only protection for managed files from permanent deletion.
+- List, restore, and permanently delete deleted nodes and managed files
+  protected from permanent deletion from the Recycle Bin administration page.
 - Adapter API for custom Backdrop entity types.
 - Bounded automatic permanent deletion of expired Recycle Bin items.
 
@@ -19,8 +21,8 @@ known public file URL may still be reachable; this feature is a recovery and
 cleanup safeguard, not an access-control or private-file mechanism.
 
 When a node is sent to the Recycle Bin, its file-field usage remains intact so
-restoring the node also restores its references. Purging the node runs
-Backdrop's normal field cleanup; files with no remaining usages become
+restoring the node also restores its references. Permanently deleting the node
+runs Backdrop's normal field cleanup; files with no remaining usages become
 temporary and are then removed by the normal file cleanup process.
 
 ## Installation
@@ -33,8 +35,9 @@ temporary and are then removed by the normal file cleanup process.
 Content types are disabled by default. Enable only content types whose delete
 and restore behavior has been verified for the site.
 
-Permanent managed-file protection is also disabled by default. Enable it only
-after reviewing the metadata-only behavior and the direct-URL limitation.
+Protection for managed files from permanent deletion is also disabled by
+default. Enable it only after reviewing the metadata-only behavior and the
+direct-URL limitation.
 
 Automatic permanent deletion is disabled by default. When enabled, items past
 the retention period below are deleted during cron, up to the per-run limit.

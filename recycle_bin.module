@@ -999,15 +999,22 @@ function recycle_bin_form_node_multiple_delete_confirm_alter(&$form, &$form_stat
     return;
   }
   if ($permanent) {
-    $days = (int) config_get('recycle_bin.settings', 'retention_days');
-    $recoverable_text = $days > 0
-      ? format_plural($recoverable,
-          '1 content item will be moved to the Recycle Bin, where it can be restored for @days days.',
-          '@count content items will be moved to the Recycle Bin, where they can be restored for @days days.',
-          array('@days' => $days))
-      : format_plural($recoverable,
-          '1 content item will be moved to the Recycle Bin, where it can be restored.',
-          '@count content items will be moved to the Recycle Bin, where they can be restored.');
+    if (!empty(config_get('recycle_bin.settings', 'auto_purge_enabled'))) {
+      $days = (int) config_get('recycle_bin.settings', 'retention_days');
+      $recoverable_text = $days > 0
+        ? format_plural($recoverable,
+            '1 content item will be moved to the Recycle Bin, where it can be restored for @days days.',
+            '@count content items will be moved to the Recycle Bin, where they can be restored for @days days.',
+            array('@days' => $days))
+        : format_plural($recoverable,
+            '1 content item will be moved to the Recycle Bin, where it can be restored.',
+            '@count content items will be moved to the Recycle Bin, where they can be restored.');
+    }
+    else {
+      $recoverable_text = format_plural($recoverable,
+        '1 content item will be moved to the Recycle Bin and remains recoverable until an administrator permanently deletes it.',
+        '@count content items will be moved to the Recycle Bin and remain recoverable until an administrator permanently deletes them.');
+    }
     $form['description']['#markup'] = $recoverable_text
       . ' ' . format_plural($permanent,
       '1 content item is not covered by the Recycle Bin and will be permanently deleted. This cannot be undone.',
@@ -1090,7 +1097,7 @@ function recycle_bin_delete_confirm_description() {
     ? l(t('Recycle Bin'), 'admin/content/recycle-bin')
     : t('Recycle Bin');
   $days = (int) config_get('recycle_bin.settings', 'retention_days');
-  if ($days > 0) {
+  if (config_get('recycle_bin.settings', 'auto_purge_enabled') && $days > 0) {
     return format_plural($days,
       'This content will be moved to the !bin. It can be restored from there for 1 day, after which it becomes eligible for permanent deletion.',
       'This content will be moved to the !bin. It can be restored from there for @count days, after which it becomes eligible for permanent deletion.',
