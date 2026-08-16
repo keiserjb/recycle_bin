@@ -84,6 +84,7 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
     $node = $this->backdropCreateNode(array(
       'type' => 'article',
       'title' => 'Recycle Bin fixture',
+      'body' => array(LANGUAGE_NONE => array(array('value' => 'unchanged body'))),
     ));
     $nid = $node->nid;
 
@@ -93,10 +94,12 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
 
     $trashed = recycle_bin_with_context('recycle_bin', 'node_load', array($nid, NULL, TRUE));
     $this->assertEqual($trashed->title, 'Recycle Bin fixture', 'Recycle Bin context loads the original node.');
+    $this->assertEqual($trashed->body[LANGUAGE_NONE][0]['value'], 'unchanged body', 'Recycle Bin context preserves field data.');
 
     $this->assertTrue(recycle_bin_restore_node($nid), 'Restore succeeds.');
     $restored = node_load($nid, NULL, TRUE);
     $this->assertEqual($restored->title, 'Recycle Bin fixture', 'Restored node is visible with the same title.');
+    $this->assertEqual($restored->body[LANGUAGE_NONE][0]['value'], 'unchanged body', 'Restored node preserves field data.');
     $this->assertFalse(recycle_bin_get_marker('node', $nid), 'Restore removes the marker.');
 
     node_delete($nid);
