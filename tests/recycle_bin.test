@@ -58,6 +58,27 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
     $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('news_page'), 'Renaming a bundle removes the old machine name and stores the new one.');
   }
 
+  /**
+   * Deleted bundles do not re-enable a recreated machine name.
+   */
+  public function testDeletedBundleIsNotEnabledWhenRecreated() {
+    $type = (object) array(
+      'type' => 'recycle_recreated',
+      'name' => 'Recycle recreated',
+    );
+    node_type_save($type);
+    config('recycle_bin.settings')->set('enabled_bundles', array('article', $type->type))->save();
+
+    node_type_delete($type);
+    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('article'), 'Deleting a bundle removes only its machine name from the enabled list.');
+
+    node_type_save($type);
+    $this->backdropLogin($this->backdropCreateUser(array('administer content types', 'administer recycle bin')));
+    $form = backdrop_get_form('node_type_form', node_type_load($type->type));
+    $this->assertFalse($form['recycle_bin']['recycle_bin_enabled']['#default_value'], 'Recreated bundle is not enabled without explicit opt-in.');
+    node_type_delete($type);
+  }
+
   public function testSoftDeleteRestoreAndPurge() {
     $node = $this->backdropCreateNode(array(
       'type' => 'article',
