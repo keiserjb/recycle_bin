@@ -143,15 +143,10 @@ function recycle_bin_get_adapters() {
   }
 
   $adapters = recycle_bin_builtin_adapter_info();
-  foreach (module_invoke_all('recycle_bin_adapter_info') as $definitions) {
-    if (!is_array($definitions)) {
-      continue;
-    }
-    foreach ($definitions as $entity_type => $definition) {
-      if (is_array($definition)) {
-        $definition['entity type'] = isset($definition['entity type']) ? $definition['entity type'] : $entity_type;
-        $adapters[$entity_type] = $definition;
-      }
+  foreach (module_invoke_all('recycle_bin_adapter_info') as $entity_type => $definition) {
+    if (is_array($definition)) {
+      $definition['entity type'] = isset($definition['entity type']) ? $definition['entity type'] : $entity_type;
+      $adapters[$entity_type] = $definition;
     }
   }
 
