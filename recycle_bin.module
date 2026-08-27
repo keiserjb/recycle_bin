@@ -14,6 +14,8 @@ function recycle_bin_autoload_info() {
     'RecycleBinStorageAdapterTrait' => 'includes/recycle_bin.storage.inc',
     'RecycleBinNodeStorageController' => 'includes/recycle_bin.node.inc',
     'RecycleBinFileStorageController' => 'includes/recycle_bin.file.inc',
+    'RecycleBinTaxonomyTermStorageController' => 'includes/recycle_bin.taxonomy_term.inc',
+    'recycle_bin_handler_field_node_link_delete' => 'views/recycle_bin_handler_field_node_link_delete.inc',
   );
 }
 
@@ -98,6 +100,12 @@ function recycle_bin_builtin_adapter_info() {
       'bundle key' => 'type',
       'revision key' => 'vid',
       'enabled callback' => 'recycle_bin_node_adapter_enabled',
+      // node_view_multiple() runs node-specific hooks (hook_node_view, etc.)
+      // that the generic entity_view_multiple() fallback would skip, so the
+      // Recycle Bin preview page uses it directly for full fidelity with a
+      // node's normal page.
+      'view multiple callback' => 'node_view_multiple',
+      'previewable' => TRUE,
     ),
     'file' => array(
       'entity type' => 'file',
@@ -108,6 +116,19 @@ function recycle_bin_builtin_adapter_info() {
       'bundle key' => 'type',
       'revision key' => NULL,
       'enabled callback' => 'recycle_bin_file_adapter_enabled',
+      // Managed files have no meaningful "full page" view mode; leave
+      // 'previewable' at its FALSE default so no dead View link is offered.
+    ),
+    'taxonomy_term' => array(
+      'entity type' => 'taxonomy_term',
+      'controller class' => 'TaxonomyTermController',
+      'replacement class' => 'RecycleBinTaxonomyTermStorageController',
+      'base table' => 'taxonomy_term_data',
+      'id key' => 'tid',
+      'bundle key' => 'vocabulary',
+      'revision key' => NULL,
+      'enabled callback' => 'recycle_bin_taxonomy_term_adapter_enabled',
+      'previewable' => TRUE,
     ),
   );
 }
@@ -170,7 +191,12 @@ function recycle_bin_get_adapters() {
     if (!isset($adapter['load query callback'])) {
       $adapters[$entity_type]['load query callback'] = NULL;
     }
-    $adapters[$entity_type] = $adapter;
+    if (!isset($adapter['view multiple callback'])) {
+      $adapters[$entity_type]['view multiple callback'] = NULL;
+    }
+    if (!isset($adapter['previewable'])) {
+      $adapters[$entity_type]['previewable'] = FALSE;
+    }
   }
   return $adapters;
 }
@@ -218,6 +244,13 @@ function recycle_bin_file_adapter_enabled($entity) {
 }
 
 /**
+ * Built-in taxonomy term opt-in policy.
+ */
+function recycle_bin_taxonomy_term_adapter_enabled($entity) {
+  return recycle_bin_is_bundle_enabled('taxonomy_term', $entity->vocabulary);
+}
+
+/**
  * Returns an entity ID using adapter metadata or an entity method.
  */
 function recycle_bin_adapter_entity_id($adapter, $entity) {
@@ -262,6 +295,12 @@ function recycle_bin_adapter_alter_load_query($query, $entity_type) {
   );
   $operator = $context === 'recycle_bin' ? 'IS NOT NULL' : 'IS NULL';
   $query->condition($alias . '.entity_id', NULL, $operator);
+  // Some entity types (taxonomy_term) also tag their own buildQuery() with a
+  // core access tag (e.g. 'taxonomy_term_access') that this module separately
+  // hooks for raw SQL not covered by this method. This flag stops that
+  // tag-alter hook from applying a second, redundant copy of the same filter
+  // when the query later executes; see recycle_bin_apply_query_marker_filter().
+  $query->addMetaData('recycle_bin_filtered', TRUE);
   return $query;
 }
 
@@ -283,6 +322,30 @@ function recycle_bin_menu() {
     'page callback' => 'recycle_bin_listing',
     'access callback' => 'recycle_bin_access',
     'type' => MENU_LOCAL_TASK,
+  );
+  // Deliberately outside admin/* so Backdrop's Layout module resolves the
+  // site's normal ('default', path: "") layout instead of 'admin_default'
+  // (path: null, matched to any admin/* path) - the admin layout is a bare
+  // single-column template with no sidebar/header blocks, which made this
+  // preview look nothing like the node it was letting you inspect.
+  $items['recycle-bin/node/%/view'] = array(
+    'title' => 'View',
+    'page callback' => 'recycle_bin_node_view_page',
+    'page arguments' => array(2),
+    'access callback' => 'recycle_bin_view_access',
+    'access arguments' => array('node', 2),
+    'type' => MENU_CALLBACK,
+  );
+  // Generic preview route for every other previewable adapter (e.g.
+  // taxonomy_term). A literal path segment ('node') always wins over a '%'
+  // wildcard at the same position, so this does not shadow the route above.
+  $items['recycle-bin/%/%/view'] = array(
+    'title' => 'View',
+    'page callback' => 'recycle_bin_entity_view_page',
+    'page arguments' => array(1, 2),
+    'access callback' => 'recycle_bin_view_access',
+    'access arguments' => array(1, 2),
+    'type' => MENU_CALLBACK,
   );
   $items['admin/content/recycle-bin/%/restore'] = array(
     'title' => 'Restore',
@@ -342,6 +405,42 @@ function recycle_bin_entity_query_alter($query) {
  * Implements hook_query_TAG_alter() for tagged EntityFieldQuery and Views SQL.
  */
 function recycle_bin_query_recycle_bin_alter($query) {
+  recycle_bin_apply_query_marker_filter($query);
+}
+
+/**
+ * Implements hook_query_TAG_alter() for core's 'taxonomy_term_access' tag.
+ *
+ * Core tags several raw SQL queries with 'taxonomy_term_access' as a
+ * general-purpose extension point for term-visibility filtering:
+ * taxonomy_get_tree(), taxonomy_term_load_children(),
+ * taxonomy_term_load_parents(), the tag autocomplete widget, and
+ * TaxonomyTermController::buildQuery() itself. None of these go through
+ * EntityFieldQuery or Views, so without this a soft-deleted term would still
+ * show up in the admin taxonomy overview tree, its children/parents lookups,
+ * and the tag autocomplete widget, even though it 404s everywhere else.
+ */
+function recycle_bin_query_taxonomy_term_access_alter($query) {
+  recycle_bin_apply_query_marker_filter($query);
+}
+
+/**
+ * Adds Recycle Bin marker visibility filtering to a raw SelectQuery.
+ *
+ * Shared by every hook_query_TAG_alter() implementation in this module, and
+ * safe to call more than once on the same query object (e.g. a taxonomy term
+ * entity load: RecycleBinStorageAdapterTrait::buildQuery() already applies
+ * this filter directly, but the same query is also tagged
+ * 'taxonomy_term_access' by TaxonomyTermController::buildQuery(), so
+ * recycle_bin_query_taxonomy_term_access_alter() would otherwise run again
+ * and left-join a second, redundant copy of the same condition when the
+ * query executes) - the 'recycle_bin_filtered' metadata flag makes a second
+ * call a no-op regardless of which tag handler runs first.
+ */
+function recycle_bin_apply_query_marker_filter($query) {
+  if ($query->getMetaData('recycle_bin_filtered')) {
+    return;
+  }
   $context = recycle_bin_context();
   if ($context === 'ignore') {
     return;
@@ -350,8 +449,9 @@ function recycle_bin_query_recycle_bin_alter($query) {
   $entity_type = $query->getMetaData('recycle_bin_entity_type');
   $base_alias = $query->getMetaData('recycle_bin_base_alias');
   if (!$entity_type) {
-    // Views supplies the tag through its query plugin. Find a registered base
-    // table in the final SQL query before adding the marker join.
+    // Views and raw core queries supply the tag without this metadata. Find
+    // a registered base table in the final SQL query before adding the
+    // marker join.
     $tables = $query->getTables();
     foreach ($tables as $alias => $table) {
       if (!empty($table['table'])) {
@@ -382,6 +482,7 @@ function recycle_bin_query_recycle_bin_alter($query) {
   else {
     $query->condition($alias . '.entity_id', NULL, 'IS NULL');
   }
+  $query->addMetaData('recycle_bin_filtered', TRUE);
 }
 
 /**
@@ -479,25 +580,33 @@ function recycle_bin_with_context($context, $callback, array $args = array()) {
 
 /**
  * Returns whether a bundle is enabled for soft deletion.
+ *
+ * 'enabled_bundles' is stored per entity type: {"node": ["post"],
+ * "taxonomy_term": ["tags"]}. Any adapter can reuse this as its 'enabled
+ * callback', or supply its own for different opt-in logic (see the file
+ * adapter's site-wide toggle for an example).
  */
 function recycle_bin_is_bundle_enabled($entity_type, $bundle) {
-  if ($entity_type !== 'node') {
-    return FALSE;
-  }
   $enabled = config_get('recycle_bin.settings', 'enabled_bundles');
-  return in_array($bundle, is_array($enabled) ? $enabled : array(), TRUE);
+  $bundles = isset($enabled[$entity_type]) && is_array($enabled[$entity_type]) ? $enabled[$entity_type] : array();
+  return in_array($bundle, $bundles, TRUE);
 }
 
 /**
  * Returns a current marker row, or FALSE.
+ *
+ * @param bool $lock
+ *   Whether to lock the marker row until the current transaction completes.
  */
-function recycle_bin_get_marker($entity_type, $entity_id) {
-  return db_select('recycle_bin_entity', 't')
+function recycle_bin_get_marker($entity_type, $entity_id, $lock = FALSE) {
+  $query = db_select('recycle_bin_entity', 't')
     ->fields('t')
     ->condition('entity_type', $entity_type)
-    ->condition('entity_id', (string) $entity_id)
-    ->execute()
-    ->fetchObject();
+    ->condition('entity_id', (string) $entity_id);
+  if ($lock) {
+    $query->forUpdate();
+  }
+  return $query->execute()->fetchObject();
 }
 
 /**
@@ -599,22 +708,23 @@ function recycle_bin_restore_node($nid) {
  */
 function recycle_bin_restore_entity($entity_type, $entity_id) {
   $adapter = recycle_bin_get_adapter($entity_type);
-  $marker = recycle_bin_get_marker($entity_type, $entity_id);
   if (!$adapter || !recycle_bin_adapter_controller_is_active($entity_type)) {
     watchdog('recycle_bin', 'Cannot restore @type @id because its registered controller is not active.', array('@type' => $entity_type, '@id' => $entity_id), WATCHDOG_WARNING);
-    return FALSE;
-  }
-  if (!$marker) {
-    return FALSE;
-  }
-  entity_get_controller($entity_type)->resetCache(array($entity_id));
-  $entity = recycle_bin_with_context('recycle_bin', 'entity_load', array($entity_type, $entity_id));
-  if (!$entity) {
     return FALSE;
   }
 
   $transaction = db_transaction();
   try {
+    // Lock the marker through the delete so a simultaneous purge cannot
+    // delete an item reported as restored.
+    if (!recycle_bin_get_marker($entity_type, $entity_id, TRUE)) {
+      return FALSE;
+    }
+    entity_get_controller($entity_type)->resetCache(array($entity_id));
+    $entity = recycle_bin_with_context('recycle_bin', 'entity_load', array($entity_type, $entity_id));
+    if (!$entity) {
+      return FALSE;
+    }
     db_delete('recycle_bin_entity')
       ->condition('entity_type', $entity_type)
       ->condition('entity_id', (string) $entity_id)
@@ -627,6 +737,7 @@ function recycle_bin_restore_entity($entity_type, $entity_id) {
     watchdog_exception('recycle_bin', $e);
     throw $e;
   }
+  unset($transaction);
 
   module_invoke_all($entity_type . '_recycle_bin_restore', $entity);
   module_invoke_all('entity_recycle_bin_restore', $entity, $entity_type);
@@ -648,27 +759,39 @@ function recycle_bin_purge_entity($entity_type, $entity_id) {
     watchdog('recycle_bin', 'Cannot purge @type @id because its registered controller is not active.', array('@type' => $entity_type, '@id' => $entity_id), WATCHDOG_WARNING);
     return FALSE;
   }
-  if (!recycle_bin_get_marker($entity_type, $entity_id)) {
-    return FALSE;
-  }
-  entity_get_controller($entity_type)->resetCache(array($entity_id));
-  $entity = recycle_bin_with_context('recycle_bin', 'entity_load', array($entity_type, $entity_id));
-  if (!$entity) {
-    watchdog('recycle_bin', 'Cannot purge marker for missing @type @id; marker retained.', array('@type' => $entity_type, '@id' => $entity_id), WATCHDOG_WARNING);
-    return FALSE;
-  }
+  $transaction = db_transaction();
+  try {
+    // Lock the marker through permanent deletion so a simultaneous restore
+    // cannot remove it and report success before this purge completes.
+    if (!recycle_bin_get_marker($entity_type, $entity_id, TRUE)) {
+      return FALSE;
+    }
+    entity_get_controller($entity_type)->resetCache(array($entity_id));
+    $entity = recycle_bin_with_context('recycle_bin', 'entity_load', array($entity_type, $entity_id));
+    if (!$entity) {
+      watchdog('recycle_bin', 'Cannot purge marker for missing @type @id; marker retained.', array('@type' => $entity_type, '@id' => $entity_id), WATCHDOG_WARNING);
+      return FALSE;
+    }
 
-  // Use the ignore context for the original delete path. The entity itself is
-  // already loaded from the Recycle Bin, but core delete hooks must still be
-  // able to load active related entities such as files referenced by a node's
-  // file field. Recycle Bin context would hide those unmarked files and skip
-  // their usage cleanup.
-  recycle_bin_with_context('ignore', 'entity_delete_multiple', array($entity_type, array($entity_id)));
-  db_delete('recycle_bin_entity')
-    ->condition('entity_type', $entity_type)
-    ->condition('entity_id', (string) $entity_id)
-    ->execute();
-  db_ignore_replica();
+    // Use the ignore context for the original delete path. The entity itself is
+    // already loaded from the Recycle Bin, but core delete hooks must still be
+    // able to load active related entities such as files referenced by a node's
+    // file field. Recycle Bin context would hide those unmarked files and skip
+    // their usage cleanup.
+    recycle_bin_with_context('ignore', 'entity_delete_multiple', array($entity_type, array($entity_id)));
+    db_delete('recycle_bin_entity')
+      ->condition('entity_type', $entity_type)
+      ->condition('entity_id', (string) $entity_id)
+      ->execute();
+    db_ignore_replica();
+  }
+  catch (Exception $e) {
+    $transaction->rollback();
+    watchdog_exception('recycle_bin', $e);
+    throw $e;
+  }
+  unset($transaction);
+
   module_invoke_all($entity_type . '_recycle_bin_purge', $entity);
   module_invoke_all('entity_recycle_bin_purge', $entity, $entity_type);
   return TRUE;
@@ -725,22 +848,51 @@ function recycle_bin_purge_access() {
 }
 
 /**
+ * View access callback for a Recycle Bin item preview.
+ */
+function recycle_bin_view_access($entity_type, $entity_id) {
+  if (!user_access('view deleted entities') && !user_access('administer recycle bin')) {
+    return FALSE;
+  }
+  $adapter = recycle_bin_get_adapter($entity_type);
+  if (!$adapter || empty($adapter['previewable'])) {
+    return FALSE;
+  }
+  return recycle_bin_is_deleted($entity_type, $entity_id);
+}
+
+/**
  * Settings form.
  */
 function recycle_bin_settings_form($form, &$form_state) {
   $config = config('recycle_bin.settings');
-  $types = node_type_get_types();
-  $options = array();
-  foreach ($types as $type) {
-    $options[$type->type] = $type->name;
+  $enabled = (array) $config->get('enabled_bundles');
+
+  $node_options = array();
+  foreach (node_type_get_types() as $type) {
+    $node_options[$type->type] = $type->name;
   }
-  $form['enabled_bundles'] = array(
+  $form['node_enabled_bundles'] = array(
     '#type' => 'checkboxes',
     '#title' => t('Content types that use the Recycle Bin'),
-    '#options' => $options,
-    '#default_value' => (array) $config->get('enabled_bundles'),
+    '#options' => $node_options,
+    '#default_value' => isset($enabled['node']) ? (array) $enabled['node'] : array(),
     '#description' => t('When a checked content type is deleted, it is sent to the Recycle Bin and can be restored, rather than being removed right away. Unchecked content types are deleted immediately and cannot be recovered. No content types are checked by default.'),
   );
+
+  if (module_exists('taxonomy')) {
+    $term_options = array();
+    foreach (taxonomy_get_vocabularies() as $vocabulary) {
+      $term_options[$vocabulary->machine_name] = $vocabulary->name;
+    }
+    $form['taxonomy_term_enabled_bundles'] = array(
+      '#type' => 'checkboxes',
+      '#title' => t('Vocabularies whose terms use the Recycle Bin'),
+      '#options' => $term_options,
+      '#default_value' => isset($enabled['taxonomy_term']) ? (array) $enabled['taxonomy_term'] : array(),
+      '#description' => t('When a checked vocabulary\'s term is deleted, it is sent to the Recycle Bin and can be restored, rather than being removed right away. Child terms are not deleted or altered when their parent is: they stay exactly as they were, they just stop appearing in the vocabulary\'s term overview until the parent is restored (their tag on any content is unaffected the whole time). Deleting a term normally also permanently deletes any now-orphaned child terms outright; that cascade is skipped entirely while the parent is only in the Recycle Bin, since the parent itself has not actually been deleted yet.'),
+    );
+  }
   $form['file_adapter_enabled'] = array(
     '#type' => 'checkbox',
     '#title' => t('Send permanent managed files to the Recycle Bin instead of deleting them immediately'),
@@ -781,7 +933,12 @@ function recycle_bin_settings_form_validate($form, &$form_state) {
 
 function recycle_bin_settings_form_submit($form, &$form_state) {
   $values = $form_state['values'];
-  $enabled = array_values(array_filter((array) $values['enabled_bundles']));
+  $enabled = array(
+    'node' => array_values(array_filter((array) $values['node_enabled_bundles'])),
+  );
+  if (isset($values['taxonomy_term_enabled_bundles'])) {
+    $enabled['taxonomy_term'] = array_values(array_filter((array) $values['taxonomy_term_enabled_bundles']));
+  }
   config('recycle_bin.settings')
     ->set('enabled_bundles', $enabled)
     ->set('file_adapter_enabled', !empty($values['file_adapter_enabled']))
@@ -804,6 +961,9 @@ function recycle_bin_entity_label($entity_type, $entity, $entity_id) {
   }
   if ($entity_type === 'file') {
     return !empty($entity->filename) ? $entity->filename : $entity->uri;
+  }
+  if ($entity_type === 'taxonomy_term' && isset($entity->name)) {
+    return $entity->name;
   }
   return entity_label($entity_type, $entity);
 }
@@ -838,13 +998,19 @@ function recycle_bin_listing() {
     $title = recycle_bin_entity_label($marker->entity_type, $entity, $marker->entity_id);
     $operations = array();
     if ($entity) {
+      $adapter = recycle_bin_get_adapter($marker->entity_type);
       if ($marker->entity_type === 'node') {
         $restore_path = 'admin/content/recycle-bin/' . $marker->entity_id . '/restore';
         $purge_path = 'admin/content/recycle-bin/' . $marker->entity_id . '/purge';
+        $view_path = 'recycle-bin/node/' . $marker->entity_id . '/view';
       }
       else {
         $restore_path = 'admin/content/recycle-bin/' . $marker->entity_type . '/' . $marker->entity_id . '/restore';
         $purge_path = 'admin/content/recycle-bin/' . $marker->entity_type . '/' . $marker->entity_id . '/purge';
+        $view_path = 'recycle-bin/' . $marker->entity_type . '/' . $marker->entity_id . '/view';
+      }
+      if (!empty($adapter['previewable'])) {
+        $operations[] = l(t('View'), $view_path);
       }
       $operations[] = l(t('Restore'), $restore_path);
       $operations[] = l(t('Delete permanently'), $purge_path);
@@ -873,6 +1039,129 @@ function recycle_bin_listing() {
   );
   $build['pager'] = array('#theme' => 'pager');
   return $build;
+}
+
+/**
+ * Implements hook_preprocess_node().
+ *
+ * A soft-deleted node's canonical URL 404s while it's in the Recycle Bin
+ * (the marker filter hides it from normal queries), so any rendered link
+ * back to it is dead. Mirrors core's "Hide the page for this content"
+ * (hidden_path) behavior, which suppresses $node_url the same way for the
+ * same reason: node.theme.inc unsets it for hidden-path types so the title
+ * prints unlinked instead of pointing at a page nobody can reach.
+ */
+function recycle_bin_preprocess_node(&$variables) {
+  $node = $variables['node'];
+  if (!empty($node->nid) && recycle_bin_is_deleted('node', $node->nid)) {
+    $variables['node_url'] = FALSE;
+  }
+}
+
+/**
+ * Implements hook_preprocess_taxonomy_term().
+ *
+ * Same dead-link problem as recycle_bin_preprocess_node(), but taxonomy
+ * term.tpl.php has no hidden_path-style guard to unset $term_url onto (core
+ * always wraps the term name in an <a href="<?php print $term_url; ?>">,
+ * unconditionally). Point it at the Recycle Bin preview itself instead of
+ * leaving it pointed at a 404.
+ */
+function recycle_bin_preprocess_taxonomy_term(&$variables) {
+  $term = $variables['term'];
+  if (!empty($term->tid) && recycle_bin_is_deleted('taxonomy_term', $term->tid)) {
+    $variables['term_url'] = url('recycle-bin/taxonomy_term/' . $term->tid . '/view');
+  }
+}
+
+/**
+ * Page callback: read-only preview of a soft-deleted node.
+ *
+ * Thin wrapper kept as its own route (recycle-bin/node/%/view, rather than
+ * the generic recycle-bin/%/%/view) so node keeps its shorter URL and its
+ * node-specific view-multiple callback (see the 'node' adapter definition).
+ */
+function recycle_bin_node_view_page($nid) {
+  return recycle_bin_entity_view_page('node', (int) $nid);
+}
+
+/**
+ * Page callback: read-only preview of any soft-deleted, previewable entity.
+ *
+ * The entity's own canonical URL 404s while it is in the Recycle Bin (the
+ * marker filter hides it from normal queries), so this loads and renders it
+ * directly, letting users with the "View deleted items" permission see what
+ * it contained before deciding whether to restore or permanently delete it.
+ * See https://github.com/backdrop-contrib/recycle_bin/issues/3.
+ *
+ * Deliberately placed outside admin/* (recycle-bin/..., not
+ * admin/content/recycle-bin/...): Backdrop's Layout module resolves any
+ * admin/* path to the bare single-column 'admin_default' layout, which has
+ * no sidebar/header blocks and made an early version of this preview look
+ * nothing like the real page. Outside admin/*, the site's normal layout
+ * applies instead.
+ */
+function recycle_bin_entity_view_page($entity_type, $entity_id) {
+  $adapter = recycle_bin_get_adapter($entity_type);
+  if (!$adapter || empty($adapter['previewable'])) {
+    return MENU_NOT_FOUND;
+  }
+
+  // The render array a view-multiple callback returns is lazy: some of its
+  // #pre_render callbacks (e.g. entity_plus's default-revision check) don't
+  // actually run until backdrop_render() walks the page later, well after
+  // this callback returns. By then Recycle Bin context has reverted and the
+  // marker filter hides the entity again, so those late loads fail. Render
+  // to a finished HTML string here, while context is still switched, instead
+  // of returning the lazy array.
+  //
+  // Context is "ignore", not "recycle_bin": "recycle_bin" context means
+  // "only show deleted items" for every registered adapter, not just this
+  // one - it would hide this entity's still-active (non-deleted) related
+  // entities (e.g. a node's file/image fields) the same way it would
+  // incorrectly hide them during purge (see recycle_bin_purge_entity()).
+  // "ignore" skips the marker filter entirely for the duration of the
+  // render, so both the entity and its normal, live related entities load
+  // the same way they would outside the Recycle Bin.
+  $previous_context = recycle_bin_context();
+  recycle_bin_context('ignore');
+  try {
+    $entities = entity_load($entity_type, array($entity_id));
+    $entity = $entities ? reset($entities) : FALSE;
+    if (!$entity) {
+      return MENU_NOT_FOUND;
+    }
+    $view_callback = $adapter['view multiple callback'];
+    $build = $view_callback
+      ? call_user_func($view_callback, array($entity_id => $entity), 'full')
+      : entity_view_multiple($entity_type, array($entity_id => $entity), 'full');
+    $html = backdrop_render($build);
+  }
+  finally {
+    recycle_bin_context($previous_context);
+  }
+
+  // The entity was loaded outside the marker filter for display. Do not
+  // leave it in the normal entity cache where an active load in this
+  // request could bypass the marker visibility filter.
+  entity_get_controller($entity_type)->resetCache(array($entity_id));
+
+  $label = recycle_bin_entity_label($entity_type, $entity, $entity_id);
+  backdrop_set_title(t('@title (Recycle Bin)', array('@title' => $label)), PASS_THROUGH);
+
+  $restore_path = $entity_type === 'node'
+    ? 'admin/content/recycle-bin/' . $entity_id . '/restore'
+    : 'admin/content/recycle-bin/' . $entity_type . '/' . $entity_id . '/restore';
+
+  return array(
+    'recycle_bin_notice' => array(
+      '#markup' => '<div class="messages warning">' . t('This content is in the Recycle Bin and is not visible to other users. <a href="!restore">Restore it</a> to make it visible again.', array('!restore' => url($restore_path))) . '</div>',
+      '#weight' => -100,
+    ),
+    'preview' => array(
+      '#markup' => $html,
+    ),
+  );
 }
 
 /**
@@ -974,7 +1263,7 @@ function recycle_bin_form_node_delete_confirm_alter(&$form, &$form_state) {
   }
   backdrop_set_title(t('Move %title to the Recycle Bin?', array('%title' => $form['#node']->title)), PASS_THROUGH);
   $form['description']['#markup'] = recycle_bin_delete_confirm_description();
-  $form['actions']['submit']['#value'] = t('Move to Recycle Bin');
+  $form['actions']['submit']['#value'] = t('Move to Bin');
 }
 
 /**
@@ -1028,19 +1317,71 @@ function recycle_bin_form_node_multiple_delete_confirm_alter(&$form, &$form_stat
       'Move this content item to the Recycle Bin?',
       'Move these content items to the Recycle Bin?'), PASS_THROUGH);
     $form['description']['#markup'] = recycle_bin_delete_confirm_description();
-    $form['actions']['submit']['#value'] = t('Move to Recycle Bin');
+    $form['actions']['submit']['#value'] = t('Move to Bin');
   }
+}
+
+/**
+ * Implements hook_form_alter().
+ *
+ * Relabels the node and taxonomy term edit forms' "Delete" action link to
+ * "Move to Bin" when the entity's bundle is opted into the Recycle Bin, so
+ * the button reflects what will actually happen.
+ */
+function recycle_bin_form_alter(&$form, &$form_state, $form_id) {
+  if (substr($form_id, -10) === '_node_form' && !empty($form['#node'])) {
+    if (!empty($form['actions']['delete']) && recycle_bin_node_will_soft_delete($form['#node'])) {
+      $form['actions']['delete']['#title'] = t('Move to Bin');
+    }
+    return;
+  }
+  if ($form_id === 'taxonomy_form_term' && !empty($form['#term']['tid']) && !empty($form['actions']['delete'])) {
+    // taxonomy_form_term() stores '#term' as an array, not an entity object
+    // (unlike '#node' and taxonomy_term_confirm_delete()'s '#term'); cast it
+    // so recycle_bin_entity_will_soft_delete() can read ->vocabulary.
+    if (recycle_bin_entity_will_soft_delete('taxonomy_term', (object) $form['#term'])) {
+      $form['actions']['delete']['#value'] = t('Move to Bin');
+    }
+  }
+}
+
+/**
+ * Implements hook_form_FORM_ID_alter() for taxonomy_term_confirm_delete().
+ *
+ * Mirrors recycle_bin_form_node_delete_confirm_alter(): relabels the confirm
+ * button when the term's vocabulary is opted into the Recycle Bin.
+ */
+function recycle_bin_form_taxonomy_term_confirm_delete_alter(&$form, &$form_state) {
+  if (empty($form['#term']) || !recycle_bin_entity_will_soft_delete('taxonomy_term', $form['#term'])) {
+    return;
+  }
+  backdrop_set_title(t('Move %title to the Recycle Bin?', array('%title' => $form['#term']->name)), PASS_THROUGH);
+  // Core's own description here warns that now-orphaned child terms are
+  // deleted outright - that warning does not apply while this term is only
+  // going to the Recycle Bin (soft delete never calls the storage
+  // controller's real delete(), which is what runs that cascade; see
+  // recycle_bin_settings_form()'s vocabulary checkbox description), so it is
+  // replaced rather than kept, same as the node confirm form.
+  $form['description']['#markup'] = recycle_bin_delete_confirm_description();
+  $form['actions']['submit']['#value'] = t('Move to Bin');
 }
 
 /**
  * Returns TRUE when deleting the node now would soft-delete it.
  */
 function recycle_bin_node_will_soft_delete($node) {
-  if (recycle_bin_context() !== 'active' || !recycle_bin_adapter_controller_is_active('node')) {
+  return recycle_bin_entity_will_soft_delete('node', $node);
+}
+
+/**
+ * Returns TRUE when deleting the entity now would soft-delete it.
+ */
+function recycle_bin_entity_will_soft_delete($entity_type, $entity) {
+  if (recycle_bin_context() !== 'active' || !recycle_bin_adapter_controller_is_active($entity_type)) {
     return FALSE;
   }
-  $adapter = recycle_bin_get_adapter('node');
-  return $adapter && recycle_bin_adapter_is_enabled($adapter, $node);
+  $adapter = recycle_bin_get_adapter($entity_type);
+  return $adapter && recycle_bin_adapter_is_enabled($adapter, $entity);
 }
 
 /**
@@ -1057,6 +1398,7 @@ function recycle_bin_form_node_type_form_alter(&$form, &$form_state) {
   }
   $type = $form['#node_type']->type;
   $enabled = (array) config_get('recycle_bin.settings', 'enabled_bundles');
+  $enabled = isset($enabled['node']) ? (array) $enabled['node'] : array();
   $form['recycle_bin'] = array(
     '#type' => 'fieldset',
     '#title' => t('Recycle Bin'),
@@ -1082,22 +1424,56 @@ function recycle_bin_form_node_type_form_alter(&$form, &$form_state) {
 function recycle_bin_node_type_form_submit($form, &$form_state) {
   $type = $form_state['values']['type'];
   $old_type = isset($form_state['values']['old_type']) ? $form_state['values']['old_type'] : $type;
-  $enabled = (array) config_get('recycle_bin.settings', 'enabled_bundles');
-  // Drop both the old machine name (in case of a rename) and the current
-  // one, then re-add the current name only if the checkbox is checked.
-  $enabled = array_diff($enabled, array($old_type, $type));
-  if (!empty($form_state['values']['recycle_bin_enabled'])) {
-    $enabled[] = $type;
-  }
-  config_set('recycle_bin.settings', 'enabled_bundles', array_values($enabled));
+  $checked = !empty($form_state['values']['recycle_bin_enabled']);
+  recycle_bin_set_bundle_enabled('node', $old_type, $type, $checked);
 }
 
 /**
  * Implements hook_node_type_delete().
  */
 function recycle_bin_node_type_delete($type) {
+  recycle_bin_set_bundle_enabled('node', $type->type, NULL, FALSE);
+}
+
+/**
+ * Implements hook_taxonomy_vocabulary_delete().
+ *
+ * Unlike node types, vocabularies are only toggled on the central settings
+ * page (no per-vocabulary mirror on the vocabulary edit form - node types
+ * have one because content types are edited far more often than
+ * vocabularies; add one here too if that stops being true). This hook still
+ * earns its keep on its own: it stops 'enabled_bundles' from accumulating a
+ * stale machine name for a vocabulary that no longer exists.
+ */
+function recycle_bin_taxonomy_vocabulary_delete($vocabulary) {
+  recycle_bin_set_bundle_enabled('taxonomy_term', $vocabulary->machine_name, NULL, FALSE);
+}
+
+/**
+ * Adds or removes one bundle from a per-entity-type 'enabled_bundles' list.
+ *
+ * Shared by the node type and taxonomy vocabulary form submit handlers (add
+ * or rename a bundle) and their delete hooks (remove a bundle).
+ *
+ * @param string $entity_type
+ *   The entity type whose bundle list is being updated.
+ * @param string $old_bundle
+ *   The bundle's current machine name in config, dropped unconditionally so
+ *   a rename does not leave a stale entry behind.
+ * @param string|null $new_bundle
+ *   The bundle's new machine name to re-add when $enable is TRUE, or NULL
+ *   when the bundle no longer exists (a delete).
+ * @param bool $enable
+ *   Whether the bundle should end up enabled.
+ */
+function recycle_bin_set_bundle_enabled($entity_type, $old_bundle, $new_bundle, $enable) {
   $enabled = (array) config_get('recycle_bin.settings', 'enabled_bundles');
-  $enabled = array_values(array_diff($enabled, array($type->type)));
+  $bundles = isset($enabled[$entity_type]) ? (array) $enabled[$entity_type] : array();
+  $bundles = array_diff($bundles, array_filter(array($old_bundle, $new_bundle)));
+  if ($enable && $new_bundle !== NULL) {
+    $bundles[] = $new_bundle;
+  }
+  $enabled[$entity_type] = array_values($bundles);
   config_set('recycle_bin.settings', 'enabled_bundles', $enabled);
 }
 

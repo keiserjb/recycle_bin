@@ -94,6 +94,22 @@ function recycle_bin_update_7001() {
 }
 
 /**
+ * Migrates 'enabled_bundles' from a flat node-only list to a per-entity-type
+ * map, so additional adapters (e.g. taxonomy_term) can have their own
+ * enabled-bundle list under the same config key.
+ *
+ * Before: {"enabled_bundles": ["post", "page"]}
+ * After:  {"enabled_bundles": {"node": ["post", "page"]}}
+ */
+function recycle_bin_update_7002() {
+  $config = config('recycle_bin.settings');
+  $enabled = $config->get('enabled_bundles');
+  if (is_array($enabled) && !isset($enabled['node']) && !isset($enabled['taxonomy_term'])) {
+    $config->set('enabled_bundles', array('node' => array_values($enabled)))->save();
+  }
+}
+
+/**
  * Implements hook_install().
  */
 function recycle_bin_install() {

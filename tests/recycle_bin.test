@@ -17,7 +17,7 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
 
   protected function setUp() {
     parent::setUp(array('node', 'recycle_bin', 'entity_test', 'recycle_bin_adapter_test'));
-    config('recycle_bin.settings')->set('enabled_bundles', array('article'))->save();
+    config('recycle_bin.settings')->set('enabled_bundles', array('node' => array('article')))->save();
   }
 
   /**
@@ -31,15 +31,15 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
     $this->assertFalse($page_form['recycle_bin']['recycle_bin_enabled']['#default_value'], 'Disabled bundle is unchecked on its node type form.');
 
     $this->submitNodeTypeForm('page', 'page', 1);
-    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('article', 'page'), 'Enabling a bundle adds its machine name.');
+    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('node' => array('article', 'page')), 'Enabling a bundle adds its machine name.');
 
     $article_form = backdrop_get_form('node_type_form', node_type_load('article'));
     $this->assertTrue($article_form['recycle_bin']['recycle_bin_enabled']['#default_value'], 'Enabled bundle is checked on its node type form.');
     $this->submitNodeTypeForm('article', 'article', 0);
-    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('page'), 'Disabling a bundle removes its machine name.');
+    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('node' => array('page')), 'Disabling a bundle removes its machine name.');
 
     $this->submitNodeTypeForm('page', 'news_page', 1);
-    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('news_page'), 'Renaming a bundle removes the old machine name and stores the new one.');
+    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('node' => array('news_page')), 'Renaming a bundle removes the old machine name and stores the new one.');
   }
 
   /**
@@ -68,10 +68,10 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
       'name' => 'Recycle recreated',
     );
     node_type_save($type);
-    config('recycle_bin.settings')->set('enabled_bundles', array('article', $type->type))->save();
+    config('recycle_bin.settings')->set('enabled_bundles', array('node' => array('article', $type->type)))->save();
 
     node_type_delete($type->type);
-    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('article'), 'Deleting a bundle removes only its machine name from the enabled list.');
+    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('node' => array('article')), 'Deleting a bundle removes only its machine name from the enabled list.');
 
     node_type_save($type);
     $this->backdropLogin($this->backdropCreateUser(array('administer content types', 'administer recycle bin')));

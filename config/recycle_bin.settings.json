@@ -1,6 +1,8 @@
 {
     "_config_name": "recycle_bin.settings",
-    "enabled_bundles": [],
+    "enabled_bundles": {
+        "node": []
+    },
     "file_adapter_enabled": false,
     "auto_purge_enabled": false,
     "retention_days": 30,
