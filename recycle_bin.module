@@ -928,9 +928,10 @@ function recycle_bin_settings_form_validate($form, &$form_state) {
 
 function recycle_bin_settings_form_submit($form, &$form_state) {
   $values = $form_state['values'];
-  $enabled = array(
-    'node' => array_values(array_filter((array) $values['node_enabled_bundles'])),
-  );
+  // Only overwrite the keys this form manages - other entity types keep
+  // whatever their own adapter stored under 'enabled_bundles'.
+  $enabled = (array) config_get('recycle_bin.settings', 'enabled_bundles');
+  $enabled['node'] = array_values(array_filter((array) $values['node_enabled_bundles']));
   if (isset($values['taxonomy_term_enabled_bundles'])) {
     $enabled['taxonomy_term'] = array_values(array_filter((array) $values['taxonomy_term_enabled_bundles']));
   }
