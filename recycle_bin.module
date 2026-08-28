@@ -981,10 +981,16 @@ function recycle_bin_release_all_markers() {
     // Unknown adapters and missing entities cannot run a restore lifecycle.
     // Remove their marker so disabling has one deterministic meaning: no item
     // remains logically deleted by Recycle Bin.
-    $released += db_delete('recycle_bin_entity')
+    $deleted = db_delete('recycle_bin_entity')
       ->condition('entity_type', $row->entity_type)
       ->condition('entity_id', (string) $row->entity_id)
       ->execute();
+    if ($deleted) {
+      // Keep later recycle_bin_is_deleted() checks in this run from reading a
+      // stale cached marker, the same way recycle_bin_release_marker() does.
+      backdrop_static_reset('recycle_bin_get_marker');
+    }
+    $released += $deleted;
     $adapter = recycle_bin_get_adapter($row->entity_type);
     if ($adapter && recycle_bin_adapter_controller_is_active($row->entity_type)) {
       entity_get_controller($row->entity_type)->resetCache(array($row->entity_id));
