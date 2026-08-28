@@ -31,8 +31,8 @@
  *   - load query callback: Callback receiving ($query, $context, $adapter)
  *     when the default `base.<id key>` join is not sufficient.
  *   - entity id callback: Callback receiving an entity and returning its ID.
- *   - view multiple callback: Callback matching entity_view_multiple() for a
- *     permissioned Recycle Bin preview.
+ *   - view multiple callback: Callback matching node_view_multiple(), receiving
+ *     ($entities, $view_mode), for a permissioned Recycle Bin preview.
  *   - previewable: TRUE when the adapter supports a full-page preview.
  *
  * The adapter should remain disabled until the contributing module has defined

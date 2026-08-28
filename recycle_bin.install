@@ -181,7 +181,7 @@ function recycle_bin_disable() {
  */
 function recycle_bin_uninstall() {
   config_uninstall_config('recycle_bin');
-  foreach (array('recycle_bin_entity', 'recycle_bin_config_snapshot') as $table) {
+  foreach (array('recycle_bin_entity') as $table) {
     if (db_table_exists($table)) {
       db_drop_table($table);
     }

@@ -352,10 +352,10 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
       ->save();
 
     if (!taxonomy_vocabulary_machine_name_load('tags')) {
-      $vocabulary = (object) array(
+      $vocabulary = new TaxonomyVocabulary(array(
         'name' => 'Tags',
         'machine_name' => 'tags',
-      );
+      ));
       taxonomy_vocabulary_save($vocabulary);
     }
 
