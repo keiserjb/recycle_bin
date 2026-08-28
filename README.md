@@ -10,15 +10,15 @@ item is not enabled.
 - Send deleted content of selected content types to the Recycle Bin instead
   of deleting it immediately, so it can be restored.
 - Optional metadata-only protection for managed files from permanent deletion.
-- List, restore, and permanently delete deleted nodes and managed files
-  protected from permanent deletion from the Recycle Bin administration page.
+- Optional recovery for terms in selected taxonomy vocabularies.
+- List, preview where supported, restore, and permanently delete protected
+  entities from the Recycle Bin administration page.
 - Adapter API for custom Backdrop entity types.
 - Bounded automatic permanent deletion of expired Recycle Bin items.
 
 Recycle Bin does not move file data when a managed file is sent to the Recycle
-Bin. A
-known public file URL may still be reachable; this feature is a recovery and
-cleanup safeguard, not an access-control or private-file mechanism.
+Bin. A known public file URL may still be reachable; this feature is a recovery
+and cleanup safeguard, not an access-control or private-file mechanism.
 
 When a node is sent to the Recycle Bin, its file-field usage remains intact so
 restoring the node also restores its references. Permanently deleting the node
@@ -41,6 +41,20 @@ direct-URL limitation.
 
 Automatic permanent deletion is disabled by default. When enabled, items past
 the retention period below are deleted during cron, up to the per-run limit.
+Failed automatic deletions wait one day before retrying so one broken item does
+not permanently block cleanup of later items.
+
+## Disabling and uninstalling
+
+Disable Recycle Bin only when you intend its deleted items to return to normal
+visibility. Because a disabled module cannot enforce query filtering, the
+disable hook explicitly restores or releases every current marker before the
+module stops running. Normal entity data is preserved; nothing is permanently
+deleted by disabling or uninstalling the module.
+
+Review and empty the Recycle Bin first when deleted content must remain hidden.
+Uninstall removes Recycle Bin configuration and tables after disable has
+released the markers.
 
 ## API
 
@@ -75,10 +89,15 @@ rules. Lifecycle notifications are available through
 
 ## Testing
 
-The module includes Backdrop SimpleTest coverage for node, custom entity,
-managed-file, restore, and permanent-deletion lifecycles. Run the
-module's tests through the site's Backdrop test runner; unrelated global core
-test discovery failures should be investigated separately from this module.
+The module includes Backdrop SimpleTest coverage for node, taxonomy-term,
+custom-entity, managed-file, cron, query visibility, permissions, upgrade,
+disable, and uninstall behavior. From the Backdrop root, run:
+
+```bash
+php core/scripts/run-tests.sh --url http://backdrop RecycleBinNodeTestCase RecycleBinDisableUninstallTestCase
+```
+
+Replace `http://backdrop` with the test site's URL.
 
 ## Scope and limitations
 

@@ -31,6 +31,9 @@
  *   - load query callback: Callback receiving ($query, $context, $adapter)
  *     when the default `base.<id key>` join is not sufficient.
  *   - entity id callback: Callback receiving an entity and returning its ID.
+ *   - view multiple callback: Callback matching entity_view_multiple() for a
+ *     permissioned Recycle Bin preview.
+ *   - previewable: TRUE when the adapter supports a full-page preview.
  *
  * The adapter should remain disabled until the contributing module has defined
  * its own configuration and tested restore/purge and relationship semantics.
@@ -49,6 +52,46 @@ function hook_recycle_bin_adapter_info() {
     'enabled callback' => 'mymodule_recycle_bin_my_entity_enabled',
   );
   return $adapters;
+}
+
+/**
+ * Responds after an entity is committed to the Recycle Bin.
+ *
+ * @param object $entity
+ *   Entity that was soft-deleted.
+ * @param string $entity_type
+ *   Entity type machine name.
+ */
+function hook_entity_recycle_bin_delete($entity, $entity_type) {
+  list($entity_id) = entity_extract_ids($entity_type, $entity);
+  watchdog('example', 'Entity @type @id moved to the Recycle Bin.', array(
+    '@type' => $entity_type,
+    '@id' => $entity_id,
+  ));
+}
+
+/**
+ * Responds after an entity restore is committed.
+ *
+ * @param object $entity
+ *   Restored entity.
+ * @param string $entity_type
+ *   Entity type machine name.
+ */
+function hook_entity_recycle_bin_restore($entity, $entity_type) {
+  watchdog('example', 'Entity @type restored from the Recycle Bin.', array('@type' => $entity_type));
+}
+
+/**
+ * Responds after permanent entity deletion is committed.
+ *
+ * @param object $entity
+ *   Permanently deleted entity as loaded before deletion.
+ * @param string $entity_type
+ *   Entity type machine name.
+ */
+function hook_entity_recycle_bin_purge($entity, $entity_type) {
+  watchdog('example', 'Entity @type permanently deleted from the Recycle Bin.', array('@type' => $entity_type));
 }
 
 /**

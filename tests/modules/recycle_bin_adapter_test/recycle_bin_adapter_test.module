@@ -17,6 +17,7 @@ function recycle_bin_adapter_test_recycle_bin_adapter_info() {
       'base table' => 'entity_test',
       'id key' => 'id',
       'enabled callback' => 'recycle_bin_adapter_test_enabled',
+      'cache reset callback' => 'recycle_bin_adapter_test_cache_reset',
     ),
   );
 }
@@ -26,6 +27,43 @@ function recycle_bin_adapter_test_recycle_bin_adapter_info() {
  */
 function recycle_bin_adapter_test_enabled($entity, $adapter) {
   return TRUE;
+}
+
+/**
+ * Resets fixture caches and optionally throws a PHP Error for rollback tests.
+ */
+function recycle_bin_adapter_test_cache_reset(array $ids) {
+  if (state_get('recycle_bin_adapter_test.throw_cache_reset_error', FALSE)) {
+    throw new Error('Cache reset fixture error.');
+  }
+  entity_get_controller('entity_test')->resetCache($ids);
+}
+
+/**
+ * Implements hook_entity_recycle_bin_delete().
+ */
+function recycle_bin_adapter_test_entity_recycle_bin_delete($entity, $entity_type) {
+  state_set('recycle_bin_adapter_test.delete_transaction_depth', Database::getConnection()->transactionDepth());
+  state_set('recycle_bin_adapter_test.delete_entity_type', $entity_type);
+}
+
+/**
+ * Implements hook_entity_recycle_bin_restore().
+ */
+function recycle_bin_adapter_test_entity_recycle_bin_restore($entity, $entity_type) {
+  state_set('recycle_bin_adapter_test.restore_transaction_depth', Database::getConnection()->transactionDepth());
+  state_set('recycle_bin_adapter_test.restore_entity_type', $entity_type);
+  if (state_get('recycle_bin_adapter_test.throw_restore_notification', FALSE)) {
+    throw new Error('Restore notification fixture error.');
+  }
+}
+
+/**
+ * Implements hook_entity_recycle_bin_purge().
+ */
+function recycle_bin_adapter_test_entity_recycle_bin_purge($entity, $entity_type) {
+  state_set('recycle_bin_adapter_test.purge_transaction_depth', Database::getConnection()->transactionDepth());
+  state_set('recycle_bin_adapter_test.purge_entity_type', $entity_type);
 }
 
 /**

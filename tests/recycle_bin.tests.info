@@ -3,3 +3,9 @@ name = Recycle Bin lifecycle and recovery
 description = Checks entity, managed-file, restore, and permanent purge behavior.
 group = Recycle Bin
 file = recycle_bin.test
+
+[RecycleBinDisableUninstallTestCase]
+name = Recycle Bin disable and uninstall
+description = Checks marker release and storage cleanup across module lifecycle operations.
+group = Recycle Bin
+file = recycle_bin.test
