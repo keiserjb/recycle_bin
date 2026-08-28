@@ -281,12 +281,23 @@ function recycle_bin_adapter_is_enabled($adapter, $entity) {
 }
 
 /**
+ * Returns whether marker storage exists.
+ */
+function recycle_bin_marker_table_exists() {
+  $exists = &backdrop_static(__FUNCTION__);
+  if (!isset($exists)) {
+    $exists = db_table_exists('recycle_bin_entity');
+  }
+  return $exists;
+}
+
+/**
  * Adds marker visibility conditions to an adapter load query.
  */
 function recycle_bin_adapter_alter_load_query($query, $entity_type) {
   $context = recycle_bin_context();
   $adapter = recycle_bin_get_adapter($entity_type);
-  if (!$adapter || $context === 'ignore' || !db_table_exists('recycle_bin_entity')) {
+  if (!$adapter || $context === 'ignore' || !recycle_bin_marker_table_exists()) {
     return $query;
   }
   if (!empty($adapter['load query callback']) && function_exists($adapter['load query callback'])) {
@@ -560,10 +571,11 @@ function recycle_bin_requirements($phase) {
   if ($phase !== 'runtime') {
     return $requirements;
   }
+  $marker_table_exists = recycle_bin_marker_table_exists();
   $requirements['recycle_bin_marker_table'] = array(
     'title' => t('Recycle Bin marker table'),
-    'value' => db_table_exists('recycle_bin_entity') ? t('Present') : t('Missing'),
-    'severity' => db_table_exists('recycle_bin_entity') ? REQUIREMENT_OK : REQUIREMENT_ERROR,
+    'value' => $marker_table_exists ? t('Present') : t('Missing'),
+    'severity' => $marker_table_exists ? REQUIREMENT_OK : REQUIREMENT_ERROR,
   );
   if (db_table_exists('recycle_bin_config_snapshot')) {
     $snapshot_count = db_query('SELECT COUNT(*) FROM {recycle_bin_config_snapshot}')->fetchField();

@@ -150,7 +150,10 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
    */
   public function executeAdminContentView() {
     $view = views_get_view('node_admin_content', TRUE);
-    $this->assertTrue($view !== FALSE, 'The administrative content View is available.');
+    if ($view === FALSE) {
+      $this->assertTrue(FALSE, 'The administrative content View is available.');
+      return array();
+    }
     $view->set_display('page');
     $view->execute();
     $ids = array();
