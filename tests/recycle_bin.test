@@ -16,47 +16,48 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
   }
 
   protected function setUp() {
-    parent::setUp(array('node', 'recycle_bin', 'entity_test', 'recycle_bin_adapter_test'));
-    config('recycle_bin.settings')->set('enabled_bundles', array('node' => array('article')))->save();
+    parent::setUp(array('node', 'views', 'taxonomy', 'recycle_bin', 'entity_test', 'recycle_bin_adapter_test'));
+    config('recycle_bin.settings')->set('enabled_bundles', array('node' => array('post')))->save();
   }
 
   /**
    * Per-content-type forms sync enablement, disablement, and renames.
    */
   public function testNodeTypeFormSyncsEnabledBundles() {
-    $this->backdropLogin($this->backdropCreateUser(array('administer content types', 'administer recycle bin')));
-
-    $page_form = backdrop_get_form('node_type_form', node_type_load('page'));
-    $this->assertTrue(isset($page_form['recycle_bin']['recycle_bin_enabled']), 'Node type form includes the Recycle Bin checkbox.');
-    $this->assertFalse($page_form['recycle_bin']['recycle_bin_enabled']['#default_value'], 'Disabled bundle is unchecked on its node type form.');
-
-    $this->submitNodeTypeForm('page', 'page', 1);
-    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('node' => array('article', 'page')), 'Enabling a bundle adds its machine name.');
-
-    $article_form = backdrop_get_form('node_type_form', node_type_load('article'));
-    $this->assertTrue($article_form['recycle_bin']['recycle_bin_enabled']['#default_value'], 'Enabled bundle is checked on its node type form.');
-    $this->submitNodeTypeForm('article', 'article', 0);
-    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('node' => array('page')), 'Disabling a bundle removes its machine name.');
-
-    $this->submitNodeTypeForm('page', 'news_page', 1);
-    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('node' => array('news_page')), 'Renaming a bundle removes the old machine name and stores the new one.');
-  }
-
-  /**
-   * Submits a node type through the full Form API.
-   */
-  protected function submitNodeTypeForm($old_type, $type, $recycle_bin_enabled) {
-    $node_type = node_type_load($old_type);
-    $form_state = array('values' => array(
-      'name' => $node_type->name,
-      'type' => $type,
-      'old_type' => $old_type,
-      'recycle_bin_enabled' => $recycle_bin_enabled,
-      'op' => t('Save content type'),
+    $type = node_type_set_defaults(array(
+      'name' => 'Recycle sync',
+      'type' => 'recycle_sync',
     ));
-    $form_state['build_info']['args'] = array($node_type);
-    backdrop_form_submit('node_type_form', $form_state);
-    $this->assertFalse(form_get_errors(), 'Node type form submission has no validation errors.');
+    $type->is_new = TRUE;
+    node_type_save($type);
+    $this->assertTrue((bool) node_type_load('recycle_sync'), 'Module-owned fixture content type was created.');
+
+    $form = array('#node_type' => node_type_load('recycle_sync'));
+    $form_state = array();
+    recycle_bin_form_node_type_form_alter($form, $form_state);
+    $this->assertTrue(isset($form['recycle_bin']['recycle_bin_enabled']), 'Node type form includes the Recycle Bin checkbox.');
+    $this->assertFalse($form['recycle_bin']['recycle_bin_enabled']['#default_value'], 'Disabled bundle is unchecked on its node type form.');
+
+    $form_state['values'] = array(
+      'old_type' => 'recycle_sync',
+      'type' => 'recycle_sync',
+      'recycle_bin_enabled' => 1,
+    );
+    recycle_bin_node_type_form_submit($form, $form_state);
+    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('node' => array('post', 'recycle_sync')), 'Enabling a bundle adds its machine name.');
+
+    $form_state['values']['recycle_bin_enabled'] = 0;
+    recycle_bin_node_type_form_submit($form, $form_state);
+    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('node' => array('post')), 'Disabling a bundle removes its machine name.');
+
+    $form_state['values']['type'] = 'recycle_renamed';
+    $form_state['values']['recycle_bin_enabled'] = 1;
+    recycle_bin_node_type_form_submit($form, $form_state);
+    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('node' => array('post', 'recycle_renamed')), 'Renaming a bundle removes the old machine name and stores the new one.');
+
+    recycle_bin_set_bundle_enabled('node', 'recycle_renamed', NULL, FALSE);
+    node_type_delete('recycle_sync');
+    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('node' => array('post')), 'Deleting the fixture restores the original bundle configuration.');
   }
 
   /**
@@ -68,10 +69,10 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
       'name' => 'Recycle recreated',
     );
     node_type_save($type);
-    config('recycle_bin.settings')->set('enabled_bundles', array('node' => array('article', $type->type)))->save();
+    config('recycle_bin.settings')->set('enabled_bundles', array('node' => array('post', $type->type)))->save();
 
     node_type_delete($type->type);
-    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('node' => array('article')), 'Deleting a bundle removes only its machine name from the enabled list.');
+    $this->assertEqual(config_get('recycle_bin.settings', 'enabled_bundles'), array('node' => array('post')), 'Deleting a bundle removes only its machine name from the enabled list.');
 
     node_type_save($type);
     $this->backdropLogin($this->backdropCreateUser(array('administer content types', 'administer recycle bin')));
@@ -82,7 +83,7 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
 
   public function testSoftDeleteRestoreAndPurge() {
     $node = $this->backdropCreateNode(array(
-      'type' => 'article',
+      'type' => 'post',
       'title' => 'Recycle Bin fixture',
       'body' => array(LANGUAGE_NONE => array(array('value' => 'unchanged body'))),
     ));
@@ -90,13 +91,21 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
 
     node_delete($nid);
     $this->assertTrue((bool) recycle_bin_get_marker('node', $nid), 'Soft delete creates a marker.');
+    $this->assertIdentical(state_get('recycle_bin_adapter_test.delete_transaction_depth'), 0, 'Soft-delete lifecycle hooks run after commit.');
+    $this->assertEqual(state_get('recycle_bin_adapter_test.delete_entity_type'), 'node', 'Soft-delete lifecycle hook receives the entity type.');
     $this->assertFalse(node_load($nid, NULL, TRUE), 'Active node loading hides the deleted node.');
+
+    $active_query = $this->queryEntityId('node', $nid);
+    $this->assertFalse($active_query, 'EntityFieldQuery hides the deleted node in active context.');
+    $deleted_query = recycle_bin_with_context('recycle_bin', array($this, 'queryEntityId'), array('node', $nid));
+    $this->assertTrue($deleted_query, 'EntityFieldQuery finds the deleted node in Recycle Bin context.');
 
     $trashed = recycle_bin_with_context('recycle_bin', 'node_load', array($nid, NULL, TRUE));
     $this->assertEqual($trashed->title, 'Recycle Bin fixture', 'Recycle Bin context loads the original node.');
     $this->assertEqual($trashed->body[LANGUAGE_NONE][0]['value'], 'unchanged body', 'Recycle Bin context preserves field data.');
 
     $this->assertTrue(recycle_bin_restore_node($nid), 'Restore succeeds.');
+    $this->assertIdentical(state_get('recycle_bin_adapter_test.restore_transaction_depth'), 0, 'Restore lifecycle hooks run after commit.');
     $restored = node_load($nid, NULL, TRUE);
     $this->assertEqual($restored->title, 'Recycle Bin fixture', 'Restored node is visible with the same title.');
     $this->assertEqual($restored->body[LANGUAGE_NONE][0]['value'], 'unchanged body', 'Restored node preserves field data.');
@@ -104,8 +113,81 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
 
     node_delete($nid);
     $this->assertTrue(recycle_bin_purge_node($nid), 'Purge succeeds.');
+    $this->assertIdentical(state_get('recycle_bin_adapter_test.purge_transaction_depth'), 0, 'Purge lifecycle hooks run after commit.');
     $this->assertFalse(node_load($nid, NULL, TRUE), 'Purged node no longer exists.');
     $this->assertFalse(recycle_bin_get_marker('node', $nid), 'Purge removes the marker.');
+  }
+
+  /**
+   * Views hide active-context markers and expose them in Recycle Bin context.
+   */
+  public function testViewsQueryFiltering() {
+    $active = $this->backdropCreateNode(array(
+      'type' => 'post',
+      'title' => 'Views active fixture',
+    ));
+    $deleted = $this->backdropCreateNode(array(
+      'type' => 'post',
+      'title' => 'Views deleted fixture',
+    ));
+    node_delete($deleted->nid);
+
+    $active_ids = $this->executeAdminContentView();
+    $this->assertTrue(in_array($active->nid, $active_ids), 'Active Views results contain normal content.');
+    $this->assertFalse(in_array($deleted->nid, $active_ids), 'Active Views results hide Recycle Bin content.');
+
+    $deleted_ids = recycle_bin_with_context('recycle_bin', array($this, 'executeAdminContentView'));
+    $this->assertFalse(in_array($active->nid, $deleted_ids), 'Recycle Bin Views results hide normal content.');
+    $this->assertTrue(in_array($deleted->nid, $deleted_ids), 'Recycle Bin Views results contain deleted content.');
+
+    recycle_bin_purge_node($deleted->nid);
+    node_delete($active->nid);
+    recycle_bin_purge_node($active->nid);
+  }
+
+  /**
+   * Executes the core administrative content View and returns its node IDs.
+   */
+  public function executeAdminContentView() {
+    $view = views_get_view('node_admin_content', TRUE);
+    $this->assertTrue($view !== FALSE, 'The administrative content View is available.');
+    $view->set_display('page');
+    $view->execute();
+    $ids = array();
+    foreach ($view->result as $row) {
+      if (isset($row->nid)) {
+        $ids[] = $row->nid;
+      }
+    }
+    $view->destroy();
+    return $ids;
+  }
+
+  /**
+   * Numeric settings reject fractions and numeric notation that gets truncated.
+   */
+  public function testSettingsRequireWholeNumbers() {
+    $form = array(
+      'retention_days' => array('#parents' => array('retention_days')),
+      'purge_limit' => array('#parents' => array('purge_limit')),
+    );
+    $form_state['values'] = array(
+      'retention_days' => '1.5',
+      'purge_limit' => '1e2',
+    );
+    recycle_bin_settings_form_validate($form, $form_state);
+    $errors = form_get_errors();
+    $this->assertTrue(isset($errors['retention_days']), 'Fractional retention is rejected.');
+    $this->assertTrue(isset($errors['purge_limit']), 'Scientific-notation purge limit is rejected.');
+
+    form_clear_error();
+    $form_state['values'] = array(
+      'retention_days' => '0',
+      'purge_limit' => '1',
+    );
+    recycle_bin_settings_form_validate($form, $form_state);
+    $this->assertFalse(form_get_errors(), 'Valid whole-number settings pass validation.');
+    form_clear_error();
   }
 
   /**
@@ -123,7 +205,7 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
       field_create_instance(array(
         'field_name' => $field_name,
         'entity_type' => 'node',
-        'bundle' => 'article',
+        'bundle' => 'post',
         'label' => 'Recycle Bin file',
         'widget' => array('type' => 'file_generic'),
       ));
@@ -136,7 +218,7 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
     $uri = 'public://recycle-bin-node-file-' . REQUEST_TIME . '.txt';
     $file = file_save_data('Referenced file fixture', $uri, FILE_EXISTS_RENAME);
     $node = $this->backdropCreateNode(array(
-      'type' => 'article',
+      'type' => 'post',
       'title' => 'Recycle Bin file reference fixture',
       $field_name => array(LANGUAGE_NONE => array(array('fid' => $file->fid, 'display' => 1, 'description' => ''))),
     ));
@@ -220,6 +302,231 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
   }
 
   /**
+   * PHP Errors inside marker writes roll back instead of committing deletion.
+   */
+  public function testThrowableRollsBackSoftDelete() {
+    $entity = entity_create('entity_test', array('name' => 'Rollback fixture'));
+    entity_get_controller('entity_test')->save($entity);
+    $id = $entity->id;
+    state_set('recycle_bin_adapter_test.throw_cache_reset_error', TRUE);
+    $caught = FALSE;
+    try {
+      entity_delete_multiple('entity_test', array($id));
+    }
+    catch (Error $error) {
+      $caught = TRUE;
+      $this->assertEqual($error->getMessage(), 'Cache reset fixture error.', 'Original PHP Error is preserved.');
+    }
+    state_set('recycle_bin_adapter_test.throw_cache_reset_error', FALSE);
+
+    $this->assertTrue($caught, 'PHP Error from the transaction is caught by the test.');
+    $this->assertFalse(recycle_bin_is_deleted('entity_test', $id), 'Failed soft delete rolls back its marker.');
+    entity_get_controller('entity_test')->resetCache(array($id));
+    $this->assertTrue((bool) entity_load('entity_test', $id), 'Failed soft delete leaves the entity available.');
+    recycle_bin_with_context('ignore', 'entity_delete_multiple', array('entity_test', array($id)));
+  }
+
+  /**
+   * EntityFieldQuery helper callable through a temporary Recycle Bin context.
+   */
+  public function queryEntityId($entity_type, $entity_id) {
+    $result = (new EntityFieldQuery())
+      ->entityCondition('entity_type', $entity_type)
+      ->entityCondition('entity_id', $entity_id)
+      ->execute();
+    return isset($result[$entity_type][$entity_id]);
+  }
+
+  /**
+   * Taxonomy terms follow the same hidden, restore, and purge lifecycle.
+   */
+  public function testTaxonomyTermAdapter() {
+    config('recycle_bin.settings')
+      ->set('enabled_bundles', array(
+        'node' => array('post'),
+        'taxonomy_term' => array('tags'),
+      ))
+      ->save();
+
+    $term = entity_create('taxonomy_term', array(
+      'name' => 'Recycle taxonomy fixture',
+      'vocabulary' => 'tags',
+      'langcode' => LANGUAGE_NONE,
+    ));
+    taxonomy_term_save($term);
+    $tid = $term->tid;
+
+    taxonomy_term_delete($tid);
+    $this->assertTrue(recycle_bin_is_deleted('taxonomy_term', $tid), 'Deleting an enabled term creates a marker.');
+    $this->assertFalse(taxonomy_term_load($tid), 'Active term loading hides the deleted term.');
+    $deleted = recycle_bin_with_context('recycle_bin', 'taxonomy_term_load', array($tid));
+    $this->assertEqual($deleted->name, 'Recycle taxonomy fixture', 'Recycle Bin context loads the deleted term.');
+
+    $tree = taxonomy_get_tree('tags');
+    $tree_ids = array_map(function ($item) { return $item->tid; }, $tree);
+    $this->assertFalse(in_array($tid, $tree_ids), 'Active taxonomy trees hide the deleted term.');
+
+    $this->assertTrue(recycle_bin_restore_entity('taxonomy_term', $tid), 'Term restore succeeds.');
+    $this->assertEqual(taxonomy_term_load($tid)->name, 'Recycle taxonomy fixture', 'Restored term is visible unchanged.');
+
+    taxonomy_term_delete($tid);
+    $this->assertTrue(recycle_bin_purge_entity('taxonomy_term', $tid), 'Term purge succeeds.');
+    $this->assertFalse(recycle_bin_with_context('ignore', 'taxonomy_term_load', array($tid)), 'Purged term no longer exists.');
+
+    config('recycle_bin.settings')
+      ->set('enabled_bundles', array('node' => array('post')))
+      ->save();
+  }
+
+  /**
+   * Failed and orphaned rows do not starve healthy automatic purges.
+   */
+  public function testCronSkipsIneligibleAndDefersFailedMarkers() {
+    $node = $this->backdropCreateNode(array('type' => 'post', 'title' => 'Cron purge fixture'));
+    $nid = $node->nid;
+    node_delete($nid);
+    db_update('recycle_bin_entity')
+      ->fields(array('deleted' => REQUEST_TIME - 30))
+      ->condition('entity_type', 'node')
+      ->condition('entity_id', (string) $nid)
+      ->execute();
+
+    db_insert('recycle_bin_entity')->fields(array(
+      'entity_type' => 'node',
+      'entity_id' => '999999999',
+      'bundle' => 'post',
+      'deleted' => REQUEST_TIME - 60,
+      'deleted_uid' => 0,
+      'deleted_vid' => NULL,
+      'purge_attempted' => 0,
+    ))->execute();
+    db_insert('recycle_bin_entity')->fields(array(
+      'entity_type' => 'missing_adapter',
+      'entity_id' => '1',
+      'bundle' => NULL,
+      'deleted' => REQUEST_TIME - 120,
+      'deleted_uid' => 0,
+      'deleted_vid' => NULL,
+      'purge_attempted' => 0,
+    ))->execute();
+
+    config('recycle_bin.settings')
+      ->set('auto_purge_enabled', TRUE)
+      ->set('retention_days', 0)
+      ->set('purge_limit', 1)
+      ->save();
+
+    recycle_bin_cron();
+    $failed = recycle_bin_get_marker('node', '999999999');
+    $this->assertEqual($failed->purge_attempted, REQUEST_TIME, 'Failed purge is deferred with an attempt timestamp.');
+    $this->assertTrue(recycle_bin_is_deleted('node', $nid), 'Bounded first run leaves the healthy later item queued.');
+
+    recycle_bin_cron();
+    $this->assertFalse(recycle_bin_is_deleted('node', $nid), 'Next run progresses past the deferred failure and purges the healthy item.');
+    $this->assertFalse(node_load($nid, NULL, TRUE), 'Healthy expired node was permanently deleted.');
+    $this->assertTrue(recycle_bin_is_deleted('missing_adapter', 1), 'Unknown adapter marker remains available for diagnosis.');
+
+    $listing = recycle_bin_listing();
+    $listing_text = json_encode($listing['table']['#rows']);
+    $this->assertTrue(strpos($listing_text, 'Unavailable adapter missing_adapter 1') !== FALSE, 'Listing exposes unavailable adapter markers instead of dropping pager rows.');
+
+    db_delete('recycle_bin_entity')->condition('entity_type', 'node')->condition('entity_id', '999999999')->execute();
+    db_delete('recycle_bin_entity')->condition('entity_type', 'missing_adapter')->condition('entity_id', '1')->execute();
+    config('recycle_bin.settings')
+      ->set('auto_purge_enabled', FALSE)
+      ->set('retention_days', 30)
+      ->set('purge_limit', 50)
+      ->save();
+  }
+
+  /**
+   * Disabling semantics explicitly release every marker without purging data.
+   */
+  public function testReleaseAllMarkersRestoresContent() {
+    $node = $this->backdropCreateNode(array('type' => 'post', 'title' => 'Disable release fixture'));
+    node_delete($node->nid);
+    $this->assertFalse(node_load($node->nid, NULL, TRUE), 'Marked fixture starts hidden.');
+    state_set('recycle_bin_adapter_test.throw_restore_notification', TRUE);
+    $this->assertEqual(recycle_bin_release_all_markers(), 1, 'Marker release reports one restored item.');
+    state_set('recycle_bin_adapter_test.throw_restore_notification', FALSE);
+    $this->assertEqual(node_load($node->nid, NULL, TRUE)->title, 'Disable release fixture', 'Released item returns to normal visibility without data loss.');
+    node_delete($node->nid);
+    recycle_bin_purge_node($node->nid);
+  }
+
+  /**
+   * Listing operations match the current account's granular permissions.
+   */
+  public function testListingOperationPermissions() {
+    global $user;
+    $original_user = $user;
+    $node = $this->backdropCreateNode(array('type' => 'post', 'title' => 'Permission listing fixture'));
+    node_delete($node->nid);
+
+    $listing_user = $this->backdropCreateUser(array('access recycle bin'));
+    $user = $listing_user;
+    backdrop_static_reset('user_access');
+    $rows = json_encode(recycle_bin_listing()['table']['#rows']);
+    $this->assertTrue(strpos($rows, 'Permission listing fixture') !== FALSE, 'Listing-only user sees the deleted item.');
+    $this->assertFalse(strpos($rows, '>View<') !== FALSE, 'Listing-only user does not receive a View operation.');
+    $this->assertFalse(strpos($rows, '>Restore<') !== FALSE, 'Listing-only user does not receive a Restore operation.');
+    $this->assertFalse(strpos($rows, '>Delete permanently<') !== FALSE, 'Listing-only user does not receive a purge operation.');
+
+    $restore_user = $this->backdropCreateUser(array(
+      'access recycle bin',
+      'view deleted entities',
+      'restore deleted entities',
+    ));
+    $user = $restore_user;
+    backdrop_static_reset('user_access');
+    $rows = json_encode(recycle_bin_listing()['table']['#rows']);
+    $this->assertTrue(strpos($rows, '>View<') !== FALSE, 'Viewer receives the View operation.');
+    $this->assertTrue(strpos($rows, '>Restore<') !== FALSE, 'Restorer receives the Restore operation.');
+    $this->assertFalse(strpos($rows, '>Delete permanently<') !== FALSE, 'Restorer without purge permission does not receive a purge operation.');
+    $this->assertTrue(recycle_bin_restore_access('node', $node->nid), 'Restore route accepts a registered current marker.');
+    $this->assertFalse(recycle_bin_restore_access('missing_adapter', '1'), 'Restore route rejects an unknown adapter.');
+
+    $purge_user = $this->backdropCreateUser(array('purge deleted entities'));
+    $user = $purge_user;
+    backdrop_static_reset('user_access');
+    $this->assertTrue(recycle_bin_purge_access('node', $node->nid), 'Purge route accepts a registered current marker.');
+    $this->assertFalse(recycle_bin_purge_access('node', '999999999'), 'Purge route rejects a missing marker.');
+
+    $user = $original_user;
+    backdrop_static_reset('user_access');
+    recycle_bin_purge_node($node->nid);
+  }
+
+  /**
+   * Update cleanup removes empty legacy tables but preserves real old data.
+   */
+  public function testLegacySnapshotUpdateCleanup() {
+    module_load_install('recycle_bin');
+    db_drop_index('recycle_bin_entity', 'purge_attempted');
+    recycle_bin_update_7003();
+    $this->assertTrue(db_index_exists('recycle_bin_entity', 'purge_attempted'), 'Update repairs a partially applied purge-attempt index.');
+
+    if (db_table_exists('recycle_bin_config_snapshot')) {
+      db_drop_table('recycle_bin_config_snapshot');
+    }
+    db_create_table('recycle_bin_config_snapshot', recycle_bin_legacy_config_snapshot_schema());
+    recycle_bin_update_7003();
+    $this->assertFalse(db_table_exists('recycle_bin_config_snapshot'), 'Update removes an empty legacy snapshot table.');
+
+    db_create_table('recycle_bin_config_snapshot', recycle_bin_legacy_config_snapshot_schema());
+    db_insert('recycle_bin_config_snapshot')->fields(array(
+      'config_name' => 'fixture.settings',
+      'data' => '{}',
+      'created' => REQUEST_TIME,
+      'uid' => 0,
+      'operation' => 'update',
+    ))->execute();
+    recycle_bin_update_7003();
+    $this->assertTrue(db_table_exists('recycle_bin_config_snapshot'), 'Update preserves a nonempty legacy table to prevent data loss.');
+    db_drop_table('recycle_bin_config_snapshot');
+  }
+
+  /**
    * Permanent managed files can be restored without moving their data.
    */
   public function testManagedFileAdapter() {
@@ -249,6 +556,49 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
     $this->assertTrue(recycle_bin_purge_entity('file', $fid), 'Managed file purge succeeds.');
     $this->assertFalse(file_exists($uri), 'Managed file purge removes the file data.');
     config('recycle_bin.settings')->set('file_adapter_enabled', FALSE)->save();
+  }
+
+}
+
+/**
+ * Tests the real module disable and uninstall lifecycle in an isolated site.
+ */
+class RecycleBinDisableUninstallTestCase extends BackdropWebTestCase {
+
+  public static function getInfo() {
+    return array(
+      'name' => 'Recycle Bin disable and uninstall',
+      'description' => 'Checks that disabling releases content and uninstalling removes storage.',
+      'group' => 'Recycle Bin',
+    );
+  }
+
+  protected function setUp() {
+    parent::setUp(array('node', 'recycle_bin'));
+    config('recycle_bin.settings')->set('enabled_bundles', array('node' => array('post')))->save();
+  }
+
+  /**
+   * Disable restores visibility; uninstall removes schema and configuration.
+   */
+  public function testDisableAndUninstallLifecycle() {
+    $node = $this->backdropCreateNode(array(
+      'type' => 'post',
+      'title' => 'Disable and uninstall fixture',
+    ));
+    node_delete($node->nid);
+    $this->assertTrue(recycle_bin_is_deleted('node', $node->nid), 'Fixture starts in the Recycle Bin.');
+
+    module_disable(array('recycle_bin'));
+    $this->assertFalse(module_exists('recycle_bin'), 'The module is disabled through the Backdrop module API.');
+    $this->assertEqual(db_query('SELECT COUNT(*) FROM {recycle_bin_entity}')->fetchField(), 0, 'Disable releases every marker.');
+    $this->assertEqual(node_load($node->nid, NULL, TRUE)->title, 'Disable and uninstall fixture', 'Released content is visible after disable.');
+
+    backdrop_load('inc', 'core', 'includes/install');
+    $this->assertTrue(backdrop_uninstall_modules(array('recycle_bin')), 'The module uninstalls through the Backdrop module API.');
+    $this->assertFalse(db_table_exists('recycle_bin_entity'), 'Uninstall removes marker storage.');
+    $this->assertFalse(config_get_config_storage('active')->exists('recycle_bin.settings'), 'Uninstall removes module configuration.');
+    $this->assertEqual(node_load($node->nid, NULL, TRUE)->title, 'Disable and uninstall fixture', 'Uninstall does not delete released content.');
   }
 
 }
