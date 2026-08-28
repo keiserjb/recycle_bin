@@ -647,14 +647,27 @@ function recycle_bin_is_bundle_enabled($entity_type, $bundle) {
  *   Whether to lock the marker row until the current transaction completes.
  */
 function recycle_bin_get_marker($entity_type, $entity_id, $lock = FALSE) {
+  $marker_cache = &backdrop_static(__FUNCTION__, array());
+  $entity_id = (string) $entity_id;
+  if (!$lock && isset($marker_cache[$entity_type]) && array_key_exists($entity_id, $marker_cache[$entity_type])) {
+    return $marker_cache[$entity_type][$entity_id];
+  }
+
   $query = db_select('recycle_bin_entity', 't')
     ->fields('t')
     ->condition('entity_type', $entity_type)
-    ->condition('entity_id', (string) $entity_id);
+    ->condition('entity_id', $entity_id);
   if ($lock) {
     $query->forUpdate();
   }
-  return $query->execute()->fetchObject();
+  $marker = $query->execute()->fetchObject();
+  if (!$lock) {
+    if (!isset($marker_cache[$entity_type])) {
+      $marker_cache[$entity_type] = array();
+    }
+    $marker_cache[$entity_type][$entity_id] = $marker;
+  }
+  return $marker;
 }
 
 /**
@@ -730,6 +743,7 @@ function recycle_bin_soft_delete_entities($entity_type, array $entities, $adapte
         ))
         ->execute();
     }
+    backdrop_static_reset('recycle_bin_get_marker');
     if (!empty($adapter['cache reset callback']) && function_exists($adapter['cache reset callback'])) {
       call_user_func($adapter['cache reset callback'], $entity_ids);
     }
@@ -784,6 +798,7 @@ function recycle_bin_restore_entity($entity_type, $entity_id) {
       ->condition('entity_type', $entity_type)
       ->condition('entity_id', (string) $entity_id)
       ->execute();
+    backdrop_static_reset('recycle_bin_get_marker');
     entity_get_controller($entity_type)->resetCache(array($entity_id));
     db_ignore_replica();
   }
@@ -838,6 +853,7 @@ function recycle_bin_purge_entity($entity_type, $entity_id) {
       ->condition('entity_type', $entity_type)
       ->condition('entity_id', (string) $entity_id)
       ->execute();
+    backdrop_static_reset('recycle_bin_get_marker');
     db_ignore_replica();
   }
   catch (Throwable $e) {
@@ -972,6 +988,7 @@ function recycle_bin_release_marker($entity_type, $entity_id) {
     ->condition('entity_id', (string) $entity_id)
     ->execute();
   if ($deleted) {
+    backdrop_static_reset('recycle_bin_get_marker');
     db_ignore_replica();
   }
   return $deleted;
