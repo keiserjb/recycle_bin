@@ -348,6 +348,14 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
       ))
       ->save();
 
+    if (!taxonomy_vocabulary_machine_name_load('tags')) {
+      $vocabulary = (object) array(
+        'name' => 'Tags',
+        'machine_name' => 'tags',
+      );
+      taxonomy_vocabulary_save($vocabulary);
+    }
+
     $term = entity_create('taxonomy_term', array(
       'name' => 'Recycle taxonomy fixture',
       'vocabulary' => 'tags',
@@ -594,7 +602,7 @@ class RecycleBinDisableUninstallTestCase extends BackdropWebTestCase {
     $this->assertEqual(db_query('SELECT COUNT(*) FROM {recycle_bin_entity}')->fetchField(), 0, 'Disable releases every marker.');
     $this->assertEqual(node_load($node->nid, NULL, TRUE)->title, 'Disable and uninstall fixture', 'Released content is visible after disable.');
 
-    backdrop_load('inc', 'core', 'includes/install');
+    require_once BACKDROP_ROOT . '/core/includes/install.inc';
     $this->assertTrue(backdrop_uninstall_modules(array('recycle_bin')), 'The module uninstalls through the Backdrop module API.');
     $this->assertFalse(db_table_exists('recycle_bin_entity'), 'Uninstall removes marker storage.');
     $this->assertFalse(config_get_config_storage('active')->exists('recycle_bin.settings'), 'Uninstall removes module configuration.');

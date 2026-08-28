@@ -43,10 +43,17 @@ function recycle_bin_schema() {
         'unsigned' => TRUE,
         'not null' => FALSE,
       ),
+      'purge_attempted' => array(
+        'type' => 'int',
+        'unsigned' => TRUE,
+        'not null' => TRUE,
+        'default' => 0,
+      ),
     ),
     'primary key' => array('entity_type', 'entity_id'),
     'indexes' => array(
       'deleted' => array('deleted'),
+      'purge_attempted' => array('purge_attempted'),
       'bundle' => array('entity_type', 'bundle'),
     ),
   );
@@ -80,13 +87,9 @@ function recycle_bin_legacy_config_snapshot_schema() {
 }
 
 /**
- * Adds managed-file settings and, for legacy installs, the old snapshot table
- * that config_history can migrate.
+ * Adds managed-file settings.
  */
 function recycle_bin_update_7001() {
-  if (!db_table_exists('recycle_bin_config_snapshot')) {
-    db_create_table('recycle_bin_config_snapshot', recycle_bin_legacy_config_snapshot_schema());
-  }
   $config = config('recycle_bin.settings');
   if ($config->get('file_adapter_enabled') === NULL) {
     $config->set('file_adapter_enabled', FALSE)->save();
@@ -104,8 +107,48 @@ function recycle_bin_update_7001() {
 function recycle_bin_update_7002() {
   $config = config('recycle_bin.settings');
   $enabled = $config->get('enabled_bundles');
-  if (is_array($enabled) && !isset($enabled['node']) && !isset($enabled['taxonomy_term'])) {
+  $is_legacy_flat_list = is_array($enabled);
+  if ($is_legacy_flat_list) {
+    foreach ($enabled as $value) {
+      if (is_array($value)) {
+        $is_legacy_flat_list = FALSE;
+        break;
+      }
+    }
+  }
+  if ($is_legacy_flat_list) {
     $config->set('enabled_bundles', array('node' => array_values($enabled)))->save();
+  }
+}
+
+/**
+ * Adds automatic-purge retry tracking and removes empty legacy snapshot data.
+ */
+function recycle_bin_update_7003() {
+  if (!db_field_exists('recycle_bin_entity', 'purge_attempted')) {
+    $field = array(
+      'type' => 'int',
+      'unsigned' => TRUE,
+      'not null' => TRUE,
+      'default' => 0,
+    );
+    db_add_field('recycle_bin_entity', 'purge_attempted', $field, array(
+      'indexes' => array('purge_attempted' => array('purge_attempted')),
+    ));
+  }
+  if (!db_index_exists('recycle_bin_entity', 'purge_attempted')) {
+    db_add_index('recycle_bin_entity', 'purge_attempted', array('purge_attempted'));
+  }
+
+  // Earlier development builds created this table for a configuration-history
+  // feature that Recycle Bin no longer owns. Empty tables are safe to remove;
+  // nonempty tables are preserved and surfaced on the status report so an
+  // operator can export or migrate them without data loss.
+  if (db_table_exists('recycle_bin_config_snapshot')) {
+    $count = db_query('SELECT COUNT(*) FROM {recycle_bin_config_snapshot}')->fetchField();
+    if (!$count) {
+      db_drop_table('recycle_bin_config_snapshot');
+    }
   }
 }
 
@@ -117,11 +160,28 @@ function recycle_bin_install() {
 }
 
 /**
+ * Implements hook_disable().
+ */
+function recycle_bin_disable() {
+  if (!db_table_exists('recycle_bin_entity')) {
+    return;
+  }
+  $released = recycle_bin_release_all_markers();
+  if ($released) {
+    $message = format_plural($released,
+      'Disabling Recycle Bin restored or released 1 item.',
+      'Disabling Recycle Bin restored or released @count items.');
+    backdrop_set_message($message, 'warning');
+    watchdog('recycle_bin', $message, array(), WATCHDOG_WARNING);
+  }
+}
+
+/**
  * Implements hook_uninstall().
  */
 function recycle_bin_uninstall() {
   config_uninstall_config('recycle_bin');
-  foreach (array('recycle_bin_entity') as $table) {
+  foreach (array('recycle_bin_entity', 'recycle_bin_config_snapshot') as $table) {
     if (db_table_exists($table)) {
       db_drop_table($table);
     }

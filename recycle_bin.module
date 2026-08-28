@@ -389,7 +389,7 @@ function recycle_bin_menu() {
     'title' => 'Delete marker',
     'page callback' => 'backdrop_get_form',
     'page arguments' => array('recycle_bin_entity_release_form', 3, 4),
-    'access callback' => 'recycle_bin_purge_access',
+    'access callback' => 'recycle_bin_release_access',
     'access arguments' => array(3, 4),
     'type' => MENU_CALLBACK,
   );
@@ -1028,6 +1028,19 @@ function recycle_bin_purge_access($entity_type = NULL, $entity_id = NULL) {
 }
 
 /**
+ * Marker-release permission and optional route-target access callback.
+ */
+function recycle_bin_release_access($entity_type = NULL, $entity_id = NULL) {
+  if (!user_access('purge deleted entities') && !user_access('administer recycle bin')) {
+    return FALSE;
+  }
+  if ($entity_type === NULL && $entity_id === NULL) {
+    return TRUE;
+  }
+  return recycle_bin_is_deleted($entity_type, $entity_id);
+}
+
+/**
  * Validates an optional restore or purge route target.
  */
 function recycle_bin_operation_target_access($entity_type = NULL, $entity_id = NULL) {
@@ -1227,7 +1240,7 @@ function recycle_bin_listing() {
       }
     }
     else {
-      if (recycle_bin_purge_access($marker->entity_type, $marker->entity_id)) {
+      if (recycle_bin_release_access($marker->entity_type, $marker->entity_id)) {
         $operations[] = l(t('Delete marker'), 'admin/content/recycle-bin/' . $marker->entity_type . '/' . $marker->entity_id . '/release');
       }
     }
@@ -1285,7 +1298,9 @@ function recycle_bin_preprocess_node(&$variables) {
  */
 function recycle_bin_preprocess_taxonomy_term(&$variables) {
   $term = $variables['term'];
-  if (!empty($term->tid) && recycle_bin_is_deleted('taxonomy_term', $term->tid)) {
+  if (!empty($term->tid)
+    && recycle_bin_is_deleted('taxonomy_term', $term->tid)
+    && recycle_bin_view_access('taxonomy_term', $term->tid)) {
     $variables['term_url'] = url('recycle-bin/taxonomy_term/' . $term->tid . '/view');
   }
 }
