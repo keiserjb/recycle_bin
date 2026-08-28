@@ -486,7 +486,7 @@ function recycle_bin_query_taxonomy_term_access_alter($query) {
  * call a no-op regardless of which tag handler runs first.
  */
 function recycle_bin_apply_query_marker_filter($query) {
-  if ($query->getMetaData('recycle_bin_filtered') || !db_table_exists('recycle_bin_entity')) {
+  if ($query->getMetaData('recycle_bin_filtered') || !recycle_bin_marker_table_exists()) {
     return;
   }
   $context = recycle_bin_context();

@@ -474,37 +474,41 @@ class RecycleBinNodeTestCase extends BackdropWebTestCase {
     $node = $this->backdropCreateNode(array('type' => 'post', 'title' => 'Permission listing fixture'));
     node_delete($node->nid);
 
-    $listing_user = $this->backdropCreateUser(array('access recycle bin'));
-    $user = $listing_user;
-    backdrop_static_reset('user_access');
-    $rows = json_encode(recycle_bin_listing()['table']['#rows']);
-    $this->assertTrue(strpos($rows, 'Permission listing fixture') !== FALSE, 'Listing-only user sees the deleted item.');
-    $this->assertFalse(strpos($rows, '>View<') !== FALSE, 'Listing-only user does not receive a View operation.');
-    $this->assertFalse(strpos($rows, '>Restore<') !== FALSE, 'Listing-only user does not receive a Restore operation.');
-    $this->assertFalse(strpos($rows, '>Delete permanently<') !== FALSE, 'Listing-only user does not receive a purge operation.');
+    try {
+      $listing_user = $this->backdropCreateUser(array('access recycle bin'));
+      $user = $listing_user;
+      backdrop_static_reset('user_access');
+      $rows = json_encode(recycle_bin_listing()['table']['#rows']);
+      $this->assertTrue(strpos($rows, 'Permission listing fixture') !== FALSE, 'Listing-only user sees the deleted item.');
+      $this->assertFalse(strpos($rows, '>View<') !== FALSE, 'Listing-only user does not receive a View operation.');
+      $this->assertFalse(strpos($rows, '>Restore<') !== FALSE, 'Listing-only user does not receive a Restore operation.');
+      $this->assertFalse(strpos($rows, '>Delete permanently<') !== FALSE, 'Listing-only user does not receive a purge operation.');
 
-    $restore_user = $this->backdropCreateUser(array(
-      'access recycle bin',
-      'view deleted entities',
-      'restore deleted entities',
-    ));
-    $user = $restore_user;
-    backdrop_static_reset('user_access');
-    $rows = json_encode(recycle_bin_listing()['table']['#rows']);
-    $this->assertTrue(strpos($rows, '>View<') !== FALSE, 'Viewer receives the View operation.');
-    $this->assertTrue(strpos($rows, '>Restore<') !== FALSE, 'Restorer receives the Restore operation.');
-    $this->assertFalse(strpos($rows, '>Delete permanently<') !== FALSE, 'Restorer without purge permission does not receive a purge operation.');
-    $this->assertTrue(recycle_bin_restore_access('node', $node->nid), 'Restore route accepts a registered current marker.');
-    $this->assertFalse(recycle_bin_restore_access('missing_adapter', '1'), 'Restore route rejects an unknown adapter.');
+      $restore_user = $this->backdropCreateUser(array(
+        'access recycle bin',
+        'view deleted entities',
+        'restore deleted entities',
+      ));
+      $user = $restore_user;
+      backdrop_static_reset('user_access');
+      $rows = json_encode(recycle_bin_listing()['table']['#rows']);
+      $this->assertTrue(strpos($rows, '>View<') !== FALSE, 'Viewer receives the View operation.');
+      $this->assertTrue(strpos($rows, '>Restore<') !== FALSE, 'Restorer receives the Restore operation.');
+      $this->assertFalse(strpos($rows, '>Delete permanently<') !== FALSE, 'Restorer without purge permission does not receive a purge operation.');
+      $this->assertTrue(recycle_bin_restore_access('node', $node->nid), 'Restore route accepts a registered current marker.');
+      $this->assertFalse(recycle_bin_restore_access('missing_adapter', '1'), 'Restore route rejects an unknown adapter.');
 
-    $purge_user = $this->backdropCreateUser(array('purge deleted entities'));
-    $user = $purge_user;
-    backdrop_static_reset('user_access');
-    $this->assertTrue(recycle_bin_purge_access('node', $node->nid), 'Purge route accepts a registered current marker.');
-    $this->assertFalse(recycle_bin_purge_access('node', '999999999'), 'Purge route rejects a missing marker.');
+      $purge_user = $this->backdropCreateUser(array('purge deleted entities'));
+      $user = $purge_user;
+      backdrop_static_reset('user_access');
+      $this->assertTrue(recycle_bin_purge_access('node', $node->nid), 'Purge route accepts a registered current marker.');
+      $this->assertFalse(recycle_bin_purge_access('node', '999999999'), 'Purge route rejects a missing marker.');
+    }
+    finally {
+      $user = $original_user;
+      backdrop_static_reset('user_access');
+    }
 
-    $user = $original_user;
-    backdrop_static_reset('user_access');
     recycle_bin_purge_node($node->nid);
   }
 
