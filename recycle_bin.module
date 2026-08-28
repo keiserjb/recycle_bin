@@ -707,7 +707,10 @@ function recycle_bin_entity_access($entity_type, $entity, $account = NULL) {
   if (!$entity_id || !recycle_bin_is_deleted($entity_type, $entity_id)) {
     return TRUE;
   }
-  return user_access('view deleted entities', $account);
+  // Mirror recycle_bin_view_access(): the administrative permission implies
+  // the ability to inspect a deleted entity.
+  return user_access('view deleted entities', $account)
+    || user_access('administer recycle bin', $account);
 }
 
 /**
@@ -1392,9 +1395,9 @@ function recycle_bin_entity_view_page($entity_type, $entity_id) {
       return MENU_NOT_FOUND;
     }
 
-    // The route only checks the generic "view deleted entities" permission.
-    // Also honor the entity's own view access, so per-entity grants (e.g.
-    // node access modules) still apply to a Recycle Bin preview.
+    // The route only checks the site-wide Recycle Bin view permissions. Also
+    // honor the entity's own view access, so per-entity grants (e.g. node
+    // access modules) still apply to a Recycle Bin preview.
     $entity_access = $entity_type === 'node'
       ? node_access('view', $entity)
       : recycle_bin_entity_access($entity_type, $entity);
